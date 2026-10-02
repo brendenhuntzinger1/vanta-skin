@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Checkout | Vanta Skin</title>
+<meta name="description" content="Secure checkout for Vanta Skin.">
+<meta property="og:title" content="Checkout | Vanta Skin">
+<meta property="og:description" content="Secure checkout for Vanta Skin.">
+<meta property="og:image" content="assets/img/balm-open.jpg">
+<link rel="icon" href="assets/img/favicon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@500;600&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="assets/css/style.css">
+</head>
+<body data-page="checkout">
+<div id="site-header"></div>
+<main>
+
+<section class="section" style="padding-top:48px"><div class="container">
+<h1>Checkout</h1>
+<div class="cart-layout">
+<form id="checkout-form" novalidate>
+  <fieldset><legend>Contact</legend>
+    <div class="form-grid">
+      <div class="full"><label for="email">Email</label><input id="email" name="email" type="email" autocomplete="email" required></div>
+      <div class="full"><label for="phone">Phone (for delivery updates, optional)</label><input id="phone" name="phone" type="tel" autocomplete="tel"></div>
+    </div>
+  </fieldset>
+  <fieldset><legend>Shipping address</legend>
+    <div class="form-grid">
+      <div><label for="fname">First name</label><input id="fname" name="first_name" autocomplete="given-name" required></div>
+      <div><label for="lname">Last name</label><input id="lname" name="last_name" autocomplete="family-name" required></div>
+      <div class="full"><label for="addr1">Address</label><input id="addr1" name="address1" autocomplete="address-line1" required></div>
+      <div class="full"><label for="addr2">Apartment, suite, etc. (optional)</label><input id="addr2" name="address2" autocomplete="address-line2"></div>
+      <div><label for="city">City</label><input id="city" name="city" autocomplete="address-level2" required></div>
+      <div><label for="state">State</label><select id="state" name="state" autocomplete="address-level1" required><option value="">Select…</option>
+      <option>AL</option><option>AK</option><option>AZ</option><option>AR</option><option>CA</option><option>CO</option><option>CT</option><option>DE</option><option>DC</option><option>FL</option><option>GA</option><option>HI</option><option>ID</option><option>IL</option><option>IN</option><option>IA</option><option>KS</option><option>KY</option><option>LA</option><option>ME</option><option>MD</option><option>MA</option><option>MI</option><option>MN</option><option>MS</option><option>MO</option><option>MT</option><option>NE</option><option>NV</option><option>NH</option><option>NJ</option><option>NM</option><option>NY</option><option>NC</option><option>ND</option><option>OH</option><option>OK</option><option>OR</option><option>PA</option><option>RI</option><option>SC</option><option>SD</option><option>TN</option><option>TX</option><option>UT</option><option>VT</option><option>VA</option><option>WA</option><option>WV</option><option>WI</option><option>WY</option>
+      </select></div>
+      <div><label for="zip">ZIP code</label><input id="zip" name="zip" autocomplete="postal-code" inputmode="numeric" pattern="[0-9]{5}(-[0-9]{4})?" required></div>
+      <div><label for="country">Country</label><input id="country" name="country" value="United States" readonly></div>
+    </div>
+  </fieldset>
+  <fieldset><legend>Shipping method</legend><div id="ship-options"></div></fieldset>
+  <fieldset><legend>Payment</legend>
+    <!-- ============ PAYMENT PROCESSOR GOES HERE ============
+         Replace this block with your Stripe Payment Element, Square,
+         PayPal buttons, or a redirect to Shopify/Stripe Checkout.
+         Then set paymentsEnabled: true in assets/js/config.js and
+         define window.VANTA_PAY = function(order) { ... }.
+         ====================================================== -->
+    <div class="pay-placeholder" id="payment-element">🔒 Secure payment form will appear here.<br><small>All transactions are encrypted and processed by our PCI-compliant payment provider. We never store your card details.</small></div>
+  </fieldset>
+  <label class="checkbox"><input type="checkbox" name="agree" required> <span>I agree to the <a href="terms.html" target="_blank">Terms of Service</a>, <a href="returns.html" target="_blank">Return Policy</a> and <a href="privacy.html" target="_blank">Privacy Policy</a>.</span></label>
+  <label class="checkbox" style="margin-top:8px"><input type="checkbox" name="marketing"> <span>Email me news and offers (optional).</span></label>
+  <button class="btn block" type="submit" style="margin-top:22px">Place Order</button>
+  <div id="checkout-msg"></div>
+</form>
+<aside class="summary"><h3>Order summary</h3><div id="order-summary"></div><p style="font-size:.8rem;margin-top:14px" class="muted">Orders ship within <span data-s="processingTime"></span>. <a href="shipping.html">Shipping policy</a></p></aside>
+</div></div></section>
+</main>
+<div id="site-footer"></div>
+<script src="assets/js/config.js"></script>
+<script src="assets/js/products.js"></script>
+<script src="assets/js/main.js"></script>
+</body>
+</html>
