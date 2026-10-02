@@ -6,13 +6,13 @@
  */
 window.STORE = {
   brand: "Vanta Skin",
-  legalName: "Vanta Skin LLC",            // your registered legal business name
-  email: "support@vantaskin.com",         // customer-service email
+  legalName: "Vanta Skin",            // your registered legal business name
+  email: "support@vanta.skin",         // customer-service email
   phone: "",                              // optional, leave "" to hide
-  address: "123 Example St, Suite 100, City, ST 00000, USA", // business / returns address
-  returnsAddress: "Vanta Skin Returns, 123 Example St, Suite 100, City, ST 00000, USA",
-  governingState: "your state",           // e.g. "Texas" — used in Terms of Service
-  domain: "vantaskin.com",
+  address: "9683 Ibis Grove Blvd, Wesley Chapel, FL 33545, USA", // business / returns address
+  returnsAddress: "Vanta Skin Returns, 9683 Ibis Grove Blvd, Wesley Chapel, FL 33545, USA",
+  governingState: "Florida",           // e.g. "Texas" — used in Terms of Service
+  domain: "vanta.skin",
   policiesUpdated: "October 2, 2026",
 
   currency: "USD",
