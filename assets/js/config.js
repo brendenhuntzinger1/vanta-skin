@@ -7,7 +7,7 @@
 window.STORE = {
   brand: "Vanta Skin",
   legalName: "Vanta Skin",            // your registered legal business name
-  email: "support@vanta.skin",         // customer-service email
+  email: "btunchi88@gmail.com",         // customer-service email
   phone: "",                              // optional, leave "" to hide
   address: "9683 Ibis Grove Blvd, Wesley Chapel, FL 33545, USA", // business / returns address
   returnsAddress: "Vanta Skin Returns, 9683 Ibis Grove Blvd, Wesley Chapel, FL 33545, USA",
