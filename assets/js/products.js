@@ -36,6 +36,7 @@ window.PRODUCTS = [
   },
   {
     id: "ghk-cu-tallow-balm-travel",
+    images: ["assets/img/travel.jpg"],
     name: "GHK-Cu Tallow Balm — Travel Size",
     sub: "Same signature formula, on the go",
     size: "15 g / 0.5 oz",
@@ -52,6 +53,7 @@ window.PRODUCTS = [
   },
   {
     id: "gentle-milk-cleanser",
+    images: ["assets/img/cleanser.jpg"],
     name: "Gentle Milk Cleanser",
     sub: "Oat • Glycerin • Aloe",
     size: "120 ml / 4 fl oz",
@@ -67,6 +69,7 @@ window.PRODUCTS = [
   },
   {
     id: "hydrating-facial-mist",
+    images: ["assets/img/mist.jpg"],
     name: "Hydrating Facial Mist",
     sub: "Hyaluronic Acid • Rose Water",
     size: "100 ml / 3.4 fl oz",
@@ -82,6 +85,7 @@ window.PRODUCTS = [
   },
   {
     id: "tallow-honey-lip-balm",
+    images: ["assets/img/lip.jpg"],
     name: "Tallow & Honey Lip Balm",
     sub: "Tallow • Beeswax • Honey",
     size: "4.5 g / 0.15 oz",
@@ -97,6 +101,7 @@ window.PRODUCTS = [
   },
   {
     id: "stainless-gua-sha",
+    images: ["assets/img/guasha.jpg"],
     name: "Stainless Steel Gua Sha",
     sub: "Cooling facial massage tool",
     size: "1 tool + pouch",
@@ -113,6 +118,7 @@ window.PRODUCTS = [
   },
   {
     id: "vanta-ritual-set",
+    images: ["assets/img/set.jpg"],
     name: "The Vanta Ritual Set",
     sub: "Cleanser + Mist + Balm + Lip",
     size: "4-piece set",
