@@ -59,6 +59,7 @@
         ${logo}
         <nav class="nav" aria-label="Main">
           ${link("shop.html", "Shop All", "shop")}
+          ${link("stacks.html", "Stacks", "stacks")}
           ${link("product.html?id=ghk-cu-whipped-tallow-balm", "GHK-Cu Balm", "balm")}
           ${link("about.html", "Our Story", "about")}
           ${link("faq.html", "FAQ", "faq")}
@@ -77,7 +78,7 @@
           <div><h4>Shop</h4><ul>
             <li><a href="shop.html">Shop All</a></li>
             <li><a href="product.html?id=ghk-cu-whipped-tallow-balm">GHK-Cu Tallow Balm</a></li>
-            <li><a href="product.html?id=vanta-ritual-set">The Ritual Set</a></li>
+            <li><a href="stacks.html">Stacks &amp; Sets</a></li>
             <li><a href="cart.html">Cart</a></li></ul></div>
           <div><h4>Help</h4><ul>
             <li><a href="faq.html">FAQ</a></li>
@@ -182,6 +183,7 @@
             <div>📦 Ships in ${S.processingTime}</div>
             <div>↩︎ 30-day satisfaction guarantee — <a href="returns.html">details</a></div>
           </div>
+          ${p.stack ? `<div class="stack-includes"><h3>What's in the stack</h3>${stackList(p)}</div>` : ""}
           <details open><summary>Description</summary>${p.description.map((d) => `<p>${esc(d)}</p>`).join("")}
             <ul>${p.highlights.map((h) => `<li>${esc(h)}</li>`).join("")}</ul></details>
           ${p.keyIngredients ? `<details><summary>Key Ingredients</summary><ul>${p.keyIngredients.map(([n, d]) => `<li><strong>${esc(n)}</strong> — ${esc(d)}</li>`).join("")}</ul></details>` : ""}
@@ -198,7 +200,39 @@
       root.querySelector("#main-img").innerHTML = `<img src="${b.dataset.src}" alt="${esc(p.name)}">`;
       root.querySelectorAll(".thumbs button").forEach((x) => x.classList.toggle("active", x === b));
     }));
-    renderGrid("#related", P.filter((x) => x.id !== p.id).slice(0, 4));
+    const stacks = P.filter((x) => x.stack && x.stack.includes(p.id));
+    const rel = document.getElementById("related");
+    if (stacks.length && rel) {
+      rel.closest("section").insertAdjacentHTML("beforebegin", `<section class="section"><div class="container">
+        <div class="center" style="margin-bottom:32px"><span class="eyebrow">Stack it &amp; save</span><h2>Stacks with the ${esc(p.name)}</h2></div>
+        <div class="grid" id="in-stacks"></div></div></section>`);
+      renderGrid("#in-stacks", stacks);
+    }
+    renderGrid("#related", P.filter((x) => x.id !== p.id && !stacks.includes(x)).slice(0, 4));
+  }
+
+  function stackList(p) {
+    return `<ul class="stack-list">${p.stack.map((id) => { const x = byId(id); return `<li><a class="cart-thumb" href="product.html?id=${x.id}">${productArt(x)}</a><span><a href="product.html?id=${x.id}">${esc(x.name)}</a><small class="muted">${esc(x.size)}</small></span><s class="muted">${money(x.price)}</s></li>`; }).join("")}</ul>`;
+  }
+
+  function stacksPage() {
+    const root = document.getElementById("stacks");
+    if (!root) return;
+    root.innerHTML = P.filter((p) => p.stack).map((p) => `
+      <article class="stack-row">
+        <a class="stack-media" href="product.html?id=${p.id}">${productArt(p)}</a>
+        <div>
+          ${p.badge ? `<span class="badge">${esc(p.badge)}</span>` : ""}
+          <h2><a href="product.html?id=${p.id}">${esc(p.name)}</a></h2>
+          <p class="muted">${esc(p.tagline || p.short)}</p>
+          ${stackList(p)}
+          <div class="stack-buy">
+            <div class="price">${money(p.price)} <s class="muted">${money(p.compareAt)}</s><small>You save ${money(p.compareAt - p.price)}</small></div>
+            <button class="btn" data-add="${p.id}">Add Stack to Cart</button>
+          </div>
+        </div>
+      </article>`).join("");
+    bindAdd(root);
   }
 
   function shipMeter(sub) {
@@ -305,7 +339,7 @@
     fillConfig();
     updateCount();
     renderGrid("#featured-grid", P.filter((p) => !p.featured).slice(0, 4));
-    shopPage(); productPage(); cartPage(); checkoutPage(); forms();
+    shopPage(); stacksPage(); productPage(); cartPage(); checkoutPage(); forms();
     bindAdd();
     cookieBar();
   });
