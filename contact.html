@@ -20,7 +20,7 @@
 
 <section class="page-head"><div class="container"><span class="eyebrow">Customer Care</span><h1>Contact Us</h1><p class="muted">We typically reply within 1 business day (Mon–Fri).</p></div></section>
 <section class="section"><div class="container split" style="align-items:start">
-  <form data-simple="Thanks! Your message has been received — we'll reply within 1 business day." novalidate>
+  <form data-mailto="Customer inquiry" novalidate>
     <div class="form-grid">
       <div><label for="cn">Name</label><input id="cn" name="name" required autocomplete="name"></div>
       <div><label for="ce">Email</label><input id="ce" name="email" type="email" required autocomplete="email"></div>
@@ -29,10 +29,12 @@
       <div class="full"><label for="cm">Message</label><textarea id="cm" name="message" rows="6" required></textarea></div>
     </div>
     <button class="btn" type="submit" style="margin-top:16px">Send Message</button>
+    <p class="muted" style="font-size:.85rem;margin-top:10px">This opens your email app with your message ready to send. You can also email us directly at <span data-s="email"></span>.</p>
     <div class="form-msg"></div>
   </form>
   <div>
     <h3>Email</h3><p data-s="email"></p>
+    <h3>Business</h3><p data-s="legalName"></p>
     <h3>Mailing address</h3><p data-s="address"></p>
     <h3>Hours</h3><p>Monday – Friday, 9am – 5pm (local time)<br>Closed weekends &amp; U.S. holidays</p>
     <h3>Quick links</h3><p><a href="faq.html">FAQ</a> · <a href="shipping.html">Shipping</a> · <a href="returns.html">Returns</a> · <a href="track.html">Track order</a></p>

@@ -72,7 +72,7 @@
     return `
       <footer class="footer"><div class="container">
         <div class="footer-grid">
-          <div>${logo}<p>Simple, effective skincare built around our signature GHK-Cu Whipped Tallow Balm. Small-batch. Thoughtfully made.</p>
+          <div>${logo}<p>Simple, effective skincare built around our signature GHK-Cu Whipped Tallow Balm. Thoughtfully made.</p>
             <p><a href="mailto:${S.email}">${S.email}</a>${S.phone ? `<br>${S.phone}` : ""}</p></div>
           <div><h4>Shop</h4><ul>
             <li><a href="shop.html">Shop All</a></li>
@@ -275,6 +275,14 @@
   }
 
   function forms() {
+    document.querySelectorAll("form[data-mailto]").forEach((f) => {
+      f.addEventListener("submit", (e) => {
+        e.preventDefault();
+        if (!f.checkValidity()) { f.reportValidity(); return; }
+        const body = [...new FormData(f).entries()].map(([k, v]) => `${k}: ${v}`).join("\n");
+        location.href = `mailto:${S.email}?subject=${encodeURIComponent(f.dataset.mailto)}&body=${encodeURIComponent(body)}`;
+      });
+    });
     document.querySelectorAll("form[data-simple]").forEach((f) => {
       f.addEventListener("submit", (e) => {
         e.preventDefault();
