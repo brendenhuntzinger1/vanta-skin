@@ -92,6 +92,10 @@
             <li><a href="accessibility.html">Accessibility</a></li></ul></div>
         </div>
         <p class="fda">These statements have not been evaluated by the Food and Drug Administration. Vanta Skin products are cosmetics and are not intended to diagnose, treat, cure, or prevent any disease. Always patch test before use and consult a physician if you are pregnant, nursing, or have a skin condition.</p>
+        <div class="card-brands footer-cards" role="list" aria-label="Accepted payment methods">
+          ${[["visa", "Visa"], ["mastercard", "Mastercard"], ["amex", "American Express"], ["discover", "Discover"]]
+            .map(([f, n]) => `<img role="listitem" src="assets/img/cards/${f}.svg" alt="${n}" width="40" height="26">`).join("")}
+        </div>
         <div class="footer-bottom"><span>© ${new Date().getFullYear()} ${S.legalName}. All rights reserved.</span><span>${S.address}</span></div>
       </div></footer>`;
   }

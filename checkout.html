@@ -50,6 +50,13 @@
          Then set paymentsEnabled: true in assets/js/config.js and
          define window.VANTA_PAY = function(order) { ... }.
          ====================================================== -->
+    <div class="card-brands" role="list" aria-label="Accepted payment methods">
+      <span class="card-brands-label">We accept</span>
+      <img role="listitem" src="assets/img/cards/visa.svg" alt="Visa" width="46" height="30">
+      <img role="listitem" src="assets/img/cards/mastercard.svg" alt="Mastercard" width="46" height="30">
+      <img role="listitem" src="assets/img/cards/amex.svg" alt="American Express" width="46" height="30">
+      <img role="listitem" src="assets/img/cards/discover.svg" alt="Discover" width="46" height="30">
+    </div>
     <div class="pay-placeholder" id="payment-element">🔒 Secure payment form will appear here.<br><small>All transactions are encrypted and processed by our PCI-compliant payment provider. We never store your card details.</small></div>
   </fieldset>
   <label class="checkbox"><input type="checkbox" name="agree" required> <span>I agree to the <a href="terms.html" target="_blank">Terms of Service</a>, <a href="returns.html" target="_blank">Return Policy</a> and <a href="privacy.html" target="_blank">Privacy Policy</a>.</span></label>
