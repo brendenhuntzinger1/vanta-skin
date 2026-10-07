@@ -164,6 +164,11 @@ fieldset{border:0;padding:0;margin:0 0 28px}
 legend{font-family:var(--display);font-size:1.5rem;font-weight:600;margin-bottom:12px}
 .ship-opt{display:flex;justify-content:space-between;align-items:center;border:1px solid var(--line);border-radius:8px;padding:14px;margin-bottom:8px;cursor:pointer}
 .ship-opt input{width:auto;margin-right:10px}
+.card-brands{display:flex;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:14px}
+.card-brands img{display:block;height:30px;width:auto;border-radius:4px;box-shadow:0 0 0 1px rgba(0,0,0,.08)}
+.card-brands-label{font-size:.85rem;font-weight:600;color:var(--ink-soft);margin-right:4px}
+.footer-cards{margin:28px 0 0}
+.footer-cards img{height:26px;box-shadow:none}
 .pay-placeholder{border:2px dashed var(--blue-mid);border-radius:var(--radius);padding:24px;text-align:center;background:var(--blue-light);color:var(--ink-soft);font-size:.92rem}
 .checkbox{display:flex;gap:10px;align-items:flex-start;font-size:.88rem}
 .checkbox input{width:auto;margin-top:4px}
