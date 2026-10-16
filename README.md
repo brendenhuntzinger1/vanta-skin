@@ -25,6 +25,9 @@ This repository includes server-to-server payment endpoints under `/api/payments
 - `POST /api/payments/refund`
 - `POST /api/payments/void`
 - `POST /api/payments/reconcile` (read-only: what happened to a charge, refund or void attempt; no money moves)
+- `POST /api/payments/session` (create a short-lived embedded-checkout payment session)
+- `POST /api/payments/session-validate` (browser-facing session check for the hosted component)
+- `GET /api/payments/embed?session=<token>` (hosted payment component iframed by the Vanta Labs checkout)
 - `POST /api/payments/webhook` (Authorize.net only)
 - `POST /api/payments/sync-retry` (re-deliver due status callbacks to Vanta Labs; run from a cron)
 - `GET /api/payments/health` (signed readiness check)
@@ -66,12 +69,13 @@ authentication provider. Nothing is sent for it.
 ### What Authorize.net receives
 
 Charge: `refId` (sha256 of the idempotency key, 20 chars), `authCaptureTransaction`,
-amount, `opaqueData`, `order.invoiceNumber` (`VS-` + hash of the order id, 20
-chars), `order.description` (`<AUTHNET_MERCHANT_DESCRIPTOR> | vanta.skin`),
-tax and shipping amounts when > 0, `customer.email` when given, `billTo` (name,
-address, city, state, zip, country, phone) when given, truncated to
-Authorize.net's limits, and `duplicateWindow = 120`. No line items, product names
-or customer IP. Refund: `refId`, `refundTransaction`, amount, masked card
+amount, `opaqueData`, `order.invoiceNumber` (the storefront's order id,
+schema-truncated to 20 chars), `order.description`
+(`<AUTHNET_MERCHANT_DESCRIPTOR> | <originStorefront>`), real line items when
+supplied, tax and shipping amounts when > 0, `customer.email` when given,
+`billTo` (name, address, city, state, zip, country, phone) when given,
+truncated to Authorize.net's limits, and `duplicateWindow = 120`. No raw card
+data or customer IP. Refund: `refId`, `refundTransaction`, amount, masked card
 `XXXX####` / `XXXX`, `refTransId`. Void: `refId`, `voidTransaction`, `refTransId`.
 
 ### Required environment variables
@@ -105,7 +109,10 @@ or:
 Optional:
 
 - `VANTA_HMAC_MAX_SKEW_SECONDS` (default `300`; non-numeric, zero or negative values fall back to `300`)
-- `VANTA_ALLOWED_ORIGIN_STOREFRONTS` (comma-separated allowlist, default `vanta.skin`)
+- `VANTA_ALLOWED_ORIGIN_STOREFRONTS` (comma-separated allowlist, default `vantalabsresearch.com`)
+- `VANTA_EMBED_ALLOWED_ORIGINS` (comma-separated exact https origins allowed to iframe the hosted component, default `https://vantalabsresearch.com`)
+- `VANTA_PAYMENT_SESSION_TTL_SECONDS` (default `900`)
+- `VANTA_REQUIRE_PAYMENT_SESSION` (default `false`; set `true` so every charge must carry a live single-use session token)
 
 #### Supabase
 
@@ -135,6 +142,7 @@ Migration files:
 - `supabase/migrations/20261016000000_payment_bridge.sql`
 - `supabase/migrations/20261016001000_payment_webhook_reconciliation.sql`
 - `supabase/migrations/20261016002000_payment_sync_outbox.sql`
+- `supabase/migrations/20261016003000_payment_sessions.sql` (embedded-checkout session ledger, hash-only token storage)
 - `supabase/migrations/20261017000000_payment_reliability.sql` (idempotency status, card data columns, outbox backoff/dead letter, privilege revocation)
 
 Manual reverse steps for the last one: `supabase/migrations/ROLLBACK-20261017000000_payment_reliability.sql` (all statements commented out; not a migration).
@@ -154,6 +162,19 @@ See `VANTA_LABS_HANDOFF.md` for the integration contract (headers, canonical sig
 - Checkout now loads `assets/js/payments.js`.
 - If `window.STORE.authnet.enabled` and `window.STORE.paymentsEnabled` are true, the checkout form tokenizes card data with Authorize.net Accept.js and attaches `opaqueData` to the order object.
 - Implement `window.VANTA_PAY(order)` to send order + tokenized payload to your backend flow.
+
+### Embedded payment component (Vanta Labs checkout)
+
+For cross-storefront checkout, Vanta Skin hosts the card form at
+`GET /api/payments/embed?session=<token>` and the Vanta Labs checkout iframes
+it; the customer never leaves `vantalabsresearch.com`. Raw card data stays
+inside the iframe and is tokenized there by Accept.js; Labs only receives the
+`opaqueData` token via strictly validated `postMessage` (exact-origin checks,
+per-session ids, targeted origins). Embedding is restricted by CSP
+`frame-ancestors` to `VANTA_EMBED_ALLOWED_ORIGINS`.
+`assets/js/payment-embed-parent.js` is the reference parent-side
+implementation for the Labs codebase. The full contract and the
+Accept.js-in-iframe evaluation are in `VANTA_LABS_HANDOFF.md` (§14).
 
 ### Sandbox test checklist
 

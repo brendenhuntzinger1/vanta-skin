@@ -50,7 +50,7 @@ test('charge request: exact field inventory', () => {
   assert.deepEqual(Object.keys(request).filter((k) => request[k] !== null), ['merchantAuthentication', 'refId', 'transactionRequest']);
 
   const tx = request.transactionRequest;
-  assert.deepEqual(Object.keys(tx), ['transactionType', 'amount', 'payment', 'order', 'tax', 'shipping', 'customer', 'billTo', 'transactionSettings']);
+  assert.deepEqual(Object.keys(tx), ['transactionType', 'amount', 'payment', 'order', 'lineItems', 'tax', 'shipping', 'customer', 'billTo', 'transactionSettings']);
   assert.deepEqual(Object.keys(tx.payment), ['opaqueData']);
   assert.deepEqual(Object.keys(tx.payment.opaqueData), ['dataDescriptor', 'dataValue']);
   assert.deepEqual(Object.keys(tx.order), ['invoiceNumber', 'description']);
@@ -67,36 +67,46 @@ test('charge request: exact field inventory', () => {
   assert.equal(tx.amount, '46.04');
 });
 
-test('charge request: no line items, no product names, no customer IP', () => {
+// The real goods at their own prices are itemised for the processor and the
+// customer's statement, per the written processing approval; the customer's
+// IP address is never sent.
+test('charge request: real line items are sent; no customer IP', () => {
   const tx = build(fullPayload()).transactionRequest;
   const text = JSON.stringify(tx);
-  assert.equal(tx.lineItems, undefined);
   assert.equal(tx.customerIP, undefined);
-  assert.equal(text.includes('BPC-157'), false);
-  assert.equal(text.includes('bpc-157'), false);
   assert.equal(text.includes('203.0.113.9'), false);
-  assert.equal(text.includes('Research Peptide'), false);
+  assert.equal(tx.lineItems.lineItem.length, 1);
+  const line = tx.lineItems.lineItem[0];
+  assert.equal(line.itemId, 'bpc-157');
+  assert.equal(line.name, 'BPC-157 5mg Research Peptide');
+  assert.equal(line.quantity, 1);
+  assert.equal(line.unitPrice, '29.99');
 });
 
-test('charge request: description always names vanta.skin, never the originating storefront', () => {
+test('charge request: description names the merchant of record and the true originating storefront', () => {
   const tx = build(fullPayload()).transactionRequest;
-  assert.equal(tx.order.description, 'Vanta Skin | vanta.skin');
-  assert.equal(tx.order.description.includes('vantalabsresearch.com'), false);
+  assert.equal(tx.order.description, 'Vanta Skin | vantalabsresearch.com');
 });
 
-test('no request sent to Authorize.Net carries Labs data', () => {
+// The originating storefront and its order id must reach the processor
+// unchanged on the charge. Refund and void carry only the masked card
+// reference Authorize.Net requires — never a PAN.
+test('processor requests preserve originating-storefront records', () => {
   const payload = fullPayload();
   const key = `vskin:charge:${payload.orderId}:2`;
-  const requests = [
-    buildChargeRequest(config, payload, { idempotencyKey: key }),
+  const charge = JSON.stringify(wire(buildChargeRequest(config, payload, { idempotencyKey: key })));
+  assert.equal(charge.includes('vantalabsresearch.com'), true);
+  assert.equal(charge.includes(payload.orderId.slice(0, 20)), true);
+  assert.equal(charge.includes('BPC-157'), true);
+
+  const reversals = [
     buildRefundRequest(config, { ...payload, transactionId: '60212345678', cardNumberMasked: '1111' }, { refId: refIdFor(key) }),
     buildVoidRequest(config, { ...payload, transactionId: '60212345678' }, { refId: refIdFor(key) }),
   ];
-  for (const request of requests) {
-    const text = JSON.stringify(wire(request)).toLowerCase();
-    assert.equal(text.includes('vantalabs'), false);
-    assert.equal(text.includes('vl-10042'), false);
-    assert.equal(text.includes(payload.orderId.toLowerCase()), false);
+  for (const request of reversals) {
+    const text = JSON.stringify(wire(request));
+    assert.equal(text.includes('4111'), false);
+    assert.equal(text.includes('XXXX1111'), text.includes('REFUND') || text.includes('refundTransaction'));
   }
 });
 
@@ -111,18 +121,20 @@ test('charge request: refId is the first 20 hex chars of sha256(idempotency key)
   assert.equal(viaKey.refId, request.refId);
 });
 
-test('charge request: invoice number is VS-<hash of orderId>, never Labs orderNumber or orderId', () => {
+// The invoice number is the originating storefront's order id (schema limit
+// 20 chars), so Authorize.Net, the acquiring bank and the statement all
+// reconcile against the same identifier. It is never rebranded or hashed.
+test('charge request: invoice number is the storefront order id', () => {
   const invoice = build(fullPayload()).transactionRequest.order.invoiceNumber;
-  assert.match(invoice, /^VS-[0-9A-F]{17}$/);
+  assert.equal(invoice, fullPayload().orderId.slice(0, 20));
   assert.equal(invoice, invoiceNumberFor({ orderId: fullPayload().orderId }));
-  assert.equal(build(fullPayload({ orderNumber: undefined })).transactionRequest.order.invoiceNumber, invoice);
-  assert.equal(build(fullPayload({ orderNumber: 'X'.repeat(21) })).transactionRequest.order.invoiceNumber, invoice);
-  assert.equal(invoice.includes('VL-'), false);
-  assert.notEqual(invoiceNumberFor({ orderId: 'order-abc' }), invoice);
+  assert.equal(invoice.length <= LIMITS.invoiceNumber, true);
+  assert.equal(invoiceNumberFor({ orderId: 'order-abc' }), 'order-abc');
+  assert.notEqual(invoice, invoiceNumberFor({ orderId: 'order-abc' }));
 });
 
 test('charge request: minimal payload sends only the required fields', () => {
-  const tx = build(fullPayload({ customer: undefined, billTo: undefined, shippingCents: 0, taxCents: 0 })).transactionRequest;
+  const tx = build(fullPayload({ customer: undefined, billTo: undefined, shippingCents: 0, taxCents: 0, lineItems: undefined })).transactionRequest;
   assert.deepEqual(Object.keys(tx), ['transactionType', 'amount', 'payment', 'order', 'transactionSettings']);
 });
 

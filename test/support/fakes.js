@@ -27,7 +27,12 @@ function testConfig(overrides = {}) {
       timeoutMs: 20000,
     },
     hmac: { maxSkewSeconds: 300, secrets: { [BRIDGE_KEY_ID]: BRIDGE_SECRET } },
-    bridge: { allowedOriginStorefronts: ['vantalabsresearch.com'] },
+    bridge: {
+      allowedOriginStorefronts: ['vantalabsresearch.com'],
+      allowedEmbedOrigins: ['https://vantalabsresearch.com'],
+      paymentSessionTtlSeconds: 900,
+      requirePaymentSession: false,
+    },
     supabase: { url: 'https://db.test', serviceRoleKey: 'srk' },
     labsSync: {
       endpointUrl: 'https://labs.test/api/webhooks/vanta-skin',
@@ -43,6 +48,7 @@ function testConfig(overrides = {}) {
     ...base,
     ...overrides,
     authnet: { ...base.authnet, ...(overrides.authnet || {}) },
+    bridge: { ...base.bridge, ...(overrides.bridge || {}) },
     labsSync: { ...base.labsSync, ...(overrides.labsSync || {}) },
   };
 }
@@ -89,6 +95,7 @@ function createFakeStore() {
     paymentEvents: [],
     webhooks: new Map(),
     outbox: [],
+    sessions: new Map(),
   };
   const fail = {};
   const log = [];
@@ -200,6 +207,28 @@ function createFakeStore() {
         .sort((a, b) => Date.parse(a.next_attempt_at) - Date.parse(b.next_attempt_at))
         .slice(0, limit)
         .map((r) => ({ ...r }));
+    },
+
+    async createPaymentSession(record) {
+      log.push('createPaymentSession');
+      maybeFail('createPaymentSession');
+      db.sessions.set(record.token_hash, { ...record, consumed_at: null });
+    },
+
+    async findPaymentSessionByTokenHash(tokenHash) {
+      log.push('findPaymentSessionByTokenHash');
+      maybeFail('findPaymentSessionByTokenHash');
+      const row = db.sessions.get(tokenHash);
+      return row ? { ...row } : null;
+    },
+
+    async consumePaymentSession(tokenHash) {
+      log.push('consumePaymentSession');
+      maybeFail('consumePaymentSession');
+      const row = db.sessions.get(tokenHash);
+      if (!row || row.consumed_at) return 0;
+      row.consumed_at = new Date().toISOString();
+      return 1;
     },
   };
   return store;

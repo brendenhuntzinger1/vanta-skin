@@ -11,7 +11,7 @@ const {
   signedRequest,
   testConfig,
 } = require('./support/fakes');
-const { BridgeError, CHARGE_ENDPOINT, CUSTOMER_MESSAGES, handleCharge, toErrorResponse } = require('../api/_lib/service');
+const { BridgeError, CHARGE_ENDPOINT, CUSTOMER_MESSAGES, handleCharge, handleCreatePaymentSession, toErrorResponse } = require('../api/_lib/service');
 const { createGateway } = require('../api/_lib/authnet');
 
 const KEY = 'vskin:charge:order-2f5da385-b1b1-42be-a806-80adb74205f4:1';
@@ -49,7 +49,7 @@ test('captured → 200 with the contract body', async () => {
   assert.equal(res.body.gatewayContacted, true);
   assert.equal(res.body.transactionId, '60212345678');
   assert.equal(res.body.refId, sha256Hex(KEY).slice(0, 20));
-  assert.match(res.body.invoiceNumber, /^VS-[0-9A-F]{17}$/);
+  assert.equal(res.body.invoiceNumber, 'order-2f5da385-b1b1-');
   assert.equal(res.body.authCode, 'ABC123');
   assert.equal(res.body.cardLast4, '1111');
   assert.equal(res.body.cardType, 'Visa');
@@ -497,4 +497,116 @@ test('captured, held and uncertain answers carry no decline category', async () 
     const res = await charge(setup({ outcome }));
     assert.equal(res.body.declineCategory, null, outcome);
   }
+});
+
+// ---------------------------------------------------------------------------
+// Payment sessions (embedded checkout): charge binding + consumption
+// ---------------------------------------------------------------------------
+
+const SESSION_TOKEN = `vps_${'a'.repeat(64)}`;
+
+function sessionRow(overrides = {}) {
+  return {
+    token_hash: sha256Hex(SESSION_TOKEN),
+    order_id: chargeBody().orderId,
+    amount_cents: 4604,
+    currency: 'USD',
+    origin_storefront: 'vantalabsresearch.com',
+    parent_origin: 'https://vantalabsresearch.com',
+    expires_at: new Date(Date.now() + 600_000).toISOString(),
+    consumed_at: null,
+    ...overrides,
+  };
+}
+
+function setupWithSession({ outcome = 'captured', gw, config, row = sessionRow() } = {}) {
+  const store = createFakeStore();
+  if (row) store.db.sessions.set(row.token_hash, row);
+  const gateway = createFakeGateway({ charge: gw || (async () => gatewayResult(outcome)) });
+  return makeDeps({ gateway, config, store });
+}
+
+test('a charge with a valid payment session consumes it and charges', async () => {
+  const ctx = setupWithSession();
+  const res = await charge(ctx, { body: chargeBody({ paymentSession: SESSION_TOKEN }) });
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.body.outcome, 'captured');
+  assert.equal(ctx.gateway.calls.filter((c) => c.name === 'charge').length, 1);
+  assert.ok(ctx.store.db.sessions.get(sha256Hex(SESSION_TOKEN)).consumed_at, 'session consumed');
+});
+
+test('a consumed session is rejected 409 before the gateway is touched', async () => {
+  const ctx = setupWithSession({ row: sessionRow({ consumed_at: new Date().toISOString() }) });
+  const res = await charge(ctx, { body: chargeBody({ paymentSession: SESSION_TOKEN }) });
+  assert.equal(res.statusCode, 409);
+  assert.equal(res.body.outcome, 'conflict');
+  assert.equal(ctx.gateway.calls.length, 0);
+});
+
+test('session amount or order drift is rejected and the session stays unspent', async () => {
+  const ctx = setupWithSession();
+  const res = await charge(ctx, { body: chargeBody({ paymentSession: SESSION_TOKEN, amountCents: 1 }) });
+  assert.equal(res.statusCode, 400);
+  assert.equal(res.body.outcome, 'invalid');
+  assert.equal(ctx.gateway.calls.length, 0);
+  assert.equal(ctx.store.db.sessions.get(sha256Hex(SESSION_TOKEN)).consumed_at, null);
+});
+
+test('an expired session is rejected before the gateway is touched', async () => {
+  const ctx = setupWithSession({ row: sessionRow({ expires_at: new Date(Date.now() - 1000).toISOString() }) });
+  const res = await charge(ctx, { body: chargeBody({ paymentSession: SESSION_TOKEN }) });
+  assert.equal(res.statusCode, 400);
+  assert.equal(ctx.gateway.calls.length, 0);
+});
+
+test('a malformed paymentSession is rejected as invalid', async () => {
+  const res = await charge(setup(), { body: chargeBody({ paymentSession: 'not-a-token' }) });
+  assert.equal(res.statusCode, 400);
+  assert.equal(res.body.outcome, 'invalid');
+});
+
+test('when sessions are required, a charge without one is refused', async () => {
+  const ctx = setup({ config: testConfig({ bridge: { requirePaymentSession: true } }) });
+  const res = await charge(ctx);
+  assert.equal(res.statusCode, 400);
+  assert.equal(res.body.outcome, 'invalid');
+  assert.equal(ctx.gateway.calls.length, 0);
+});
+
+test('an idempotent replay of a session charge does not consume twice', async () => {
+  const ctx = setupWithSession();
+  const body = chargeBody({ paymentSession: SESSION_TOKEN });
+  const first = await charge(ctx, { body });
+  const second = await charge(ctx, { body });
+  assert.equal(first.statusCode, 200);
+  assert.equal(second.statusCode, 200);
+  assert.equal(second.body.replayed ?? second.replayed, true);
+  assert.equal(ctx.gateway.calls.filter((c) => c.name === 'charge').length, 1);
+});
+
+test('session creation stores only the token hash and returns the embed URL', async () => {
+  const ctx = setup();
+  const { req, rawBody } = signedRequest({
+    path: '/api/payments/session',
+    body: { orderId: 'order-1', amountCents: 4604, currency: 'USD', originStorefront: 'vantalabsresearch.com', embedOrigin: 'https://vantalabsresearch.com' },
+  });
+  const res = await handleCreatePaymentSession(req, rawBody, ctx.deps);
+  assert.equal(res.statusCode, 200);
+  assert.match(res.body.sessionToken, /^vps_[0-9a-f]{64}$/);
+  assert.equal(res.body.embedUrl, `/api/payments/embed?session=${res.body.sessionToken}`);
+  assert.match(res.body.sessionId, /^[0-9a-f]{24}$/);
+  const stored = ctx.store.db.sessions.get(sha256Hex(res.body.sessionToken));
+  assert.ok(stored, 'session stored by hash');
+  assert.equal(stored.order_id, 'order-1');
+  assert.equal(JSON.stringify([...ctx.store.db.sessions.values()]).includes('vps_'), false);
+});
+
+test('session creation rejects an unapproved embed origin', async () => {
+  const ctx = setup();
+  const { req, rawBody } = signedRequest({
+    path: '/api/payments/session',
+    body: { orderId: 'order-1', amountCents: 4604, currency: 'USD', originStorefront: 'vantalabsresearch.com', embedOrigin: 'https://vantalabsresearch.com.evil.test' },
+  });
+  await assert.rejects(() => handleCreatePaymentSession(req, rawBody, ctx.deps), /not approved/);
+  assert.equal(ctx.store.db.sessions.size, 0);
 });

@@ -220,6 +220,36 @@ function createStore(client) {
       if (error) throw new Error(`Unable to list due sync events: ${error.message}`);
       return data || [];
     },
+
+    // Embedded-checkout payment sessions. Only token SHA-256 hashes are
+    // stored; the raw token is returned to the Labs backend exactly once.
+    async createPaymentSession(record) {
+      const { error } = await client.from('payment_sessions').insert(record);
+      if (error) throw new Error(`Unable to create payment session: ${error.message}`);
+    },
+
+    async findPaymentSessionByTokenHash(tokenHash) {
+      const { data, error } = await client
+        .from('payment_sessions')
+        .select('token_hash, order_id, amount_cents, currency, origin_storefront, parent_origin, expires_at, consumed_at')
+        .eq('token_hash', tokenHash)
+        .maybeSingle();
+      if (error) throw new Error(`Unable to lookup payment session: ${error.message}`);
+      return data || null;
+    },
+
+    // Atomic single-use consumption: the update only lands while consumed_at
+    // is still null, so two racing charges can never both spend a session.
+    async consumePaymentSession(tokenHash) {
+      const { data, error } = await client
+        .from('payment_sessions')
+        .update({ consumed_at: new Date().toISOString() })
+        .eq('token_hash', tokenHash)
+        .is('consumed_at', null)
+        .select('token_hash');
+      if (error) throw new Error(`Unable to consume payment session: ${error.message}`);
+      return Array.isArray(data) ? data.length : 0;
+    },
   };
 }
 

@@ -24,10 +24,6 @@ const LIMITS = Object.freeze({
 // own idempotency keys.
 const DUPLICATE_WINDOW_SECONDS = 120;
 
-// The only storefront domain Authorize.Net ever sees in order.description.
-const STOREFRONT_DOMAIN = 'vanta.skin';
-const INVOICE_PREFIX = 'VS-';
-
 class GatewayTimeoutError extends Error {
   constructor(timeoutMs) {
     super(`Authorize.Net did not answer within ${timeoutMs}ms`);
@@ -77,10 +73,12 @@ function refIdFor(idempotencyKey) {
   return createHash('sha256').update(String(idempotencyKey || ''), 'utf8').digest('hex').slice(0, LIMITS.refId);
 }
 
-// Deterministic and Skin-branded: Labs' orderNumber and orderId are never sent to Authorize.Net.
+// The invoice number is the originating storefront's order id, exactly as
+// recorded on the order. Authorize.Net, the acquiring bank and the customer's
+// statement all reconcile against the same identifier, per the written
+// processing approval; it is never rebranded or hashed.
 function invoiceNumberFor(payload) {
-  const digest = createHash('sha256').update(String(payload?.orderId || ''), 'utf8').digest('hex').toUpperCase();
-  return `${INVOICE_PREFIX}${digest}`.slice(0, LIMITS.invoiceNumber);
+  return cleanText(payload?.orderId, LIMITS.invoiceNumber);
 }
 
 function normalizeRefundCardReference(value) {
@@ -140,10 +138,13 @@ function createTransactionRequest(config, transactionRequestType, refId) {
 
 // What Authorize.Net receives for a charge, and nothing else:
 //   refId, transactionType, amount, payment.opaqueData, order.invoiceNumber,
-//   order.description, tax / shipping (when > 0), customer.email (when given),
-//   billTo (when given), transactionSettings.duplicateWindow.
-// No line items, no product names, no customer IP. The description always
-// names vanta.skin — the originating storefront is never sent.
+//   order.description, line items (the real goods at their own prices),
+//   tax / shipping (when > 0), customer.email (when given), billTo (when
+//   given), transactionSettings.duplicateWindow. No customer IP.
+// The description names the merchant of record and the true originating
+// storefront; the invoice number is the storefront's order id. Nothing is
+// rebranded: research-product sales are never made to look like skincare
+// sales, per the written processing approval.
 function buildChargeRequest(config, payload, { refId, idempotencyKey } = {}) {
   const transactionRequestType = new APIContracts.TransactionRequestType();
   transactionRequestType.setTransactionType(APIContracts.TransactionTypeEnum.AUTHCAPTURETRANSACTION);
@@ -158,8 +159,23 @@ function buildChargeRequest(config, payload, { refId, idempotencyKey } = {}) {
 
   const order = new APIContracts.OrderType();
   order.setInvoiceNumber(invoiceNumberFor(payload));
-  order.setDescription(`${config.authnet.merchantDescriptor} | ${STOREFRONT_DOMAIN}`.slice(0, LIMITS.description));
+  order.setDescription(`${config.authnet.merchantDescriptor} | ${cleanText(payload.originStorefront, 60) || 'unknown storefront'}`.slice(0, LIMITS.description));
   transactionRequestType.setOrder(order);
+
+  if (Array.isArray(payload.lineItems) && payload.lineItems.length) {
+    const lines = payload.lineItems.slice(0, 30).map((item) => {
+      const line = new APIContracts.LineItemType();
+      line.setItemId(cleanText(item.sku || item.id, 31) || 'item');
+      line.setName(cleanText(item.name, 31) || 'item');
+      line.setDescription(cleanText(item.description || item.name, LIMITS.description) || 'item');
+      line.setQuantity(Number(item.quantity || 1));
+      line.setUnitPrice(moneyFromCents(item.unitPriceCents || 0));
+      return line;
+    });
+    const arr = new APIContracts.ArrayOfLineItem();
+    arr.setLineItem(lines);
+    transactionRequestType.setLineItems(arr);
+  }
 
   if (Number.isInteger(payload.taxCents) && payload.taxCents > 0) {
     transactionRequestType.setTax(extendedAmount(payload.taxCents, 'Tax'));

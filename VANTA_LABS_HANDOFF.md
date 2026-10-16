@@ -29,6 +29,9 @@ tests in `test/`.
 | POST | `/api/payments/refund` | Labs backend (signed) | yes |
 | POST | `/api/payments/void` | Labs backend (signed) | yes |
 | POST | `/api/payments/reconcile` | Labs backend (signed) | **no** (read-only lookup) |
+| POST | `/api/payments/session` | Labs backend (signed) | no |
+| POST | `/api/payments/session-validate` | browser (hosted component only) | no |
+| GET | `/api/payments/embed?session=<token>` | browser (hosted component) | no |
 | POST | `/api/payments/webhook` | Authorize.Net only | no |
 | GET | `/api/payments/tokenize-config` | browser | no |
 | GET | `/api/payments/health` | Labs / ops (signed) | no |
@@ -91,6 +94,7 @@ Labs must branch on `outcome`; a missing or unknown outcome means `uncertain`.
   "amountCents": 4604, "currency": "USD", "capture": true,
   "requireSandbox": true,
   "opaqueData": { "dataDescriptor": "COMMON.ACCEPT.INAPP.PAYMENT", "dataValue": "<token>" },
+  "paymentSession": "vps_<64 hex>",
   "customer": { "email": "…", "firstName": "…", "lastName": "…", "phone": "…" },
   "billTo": { "firstName": "…", "lastName": "…", "address": "…", "city": "…", "state": "TX", "zip": "78701", "country": "US" },
   "shippingCents": 995, "taxCents": 0
@@ -103,8 +107,12 @@ integer; `currency` exactly `"USD"`; `originStorefront` in
 strings; no raw card fields (`cardNumber`, `cardCode`, `cvv`, `cvc`,
 `securityCode`, `pan`); `shippingCents`/`taxCents` non-negative integers;
 `capture: false` (auth-only) is not supported; `customer`/`billTo` optional
-objects (empty fields are omitted). `lineItems` are still accepted from older
-builds, shape-checked, and **never sent**.
+objects (empty fields are omitted). `lineItems` are shape-checked and sent to
+the processor (the real goods at their own prices). `paymentSession` (the raw
+token from §14) is optional; when present it is validated — exact
+order/amount/storefront match, unexpired, unused — and consumed atomically
+before the gateway call. When `VANTA_REQUIRE_PAYMENT_SESSION=true`, charges
+without it are refused (400 `invalid`).
 
 ### What Authorize.Net receives (complete inventory)
 
@@ -115,15 +123,16 @@ builds, shape-checked, and **never sent**.
   - `transactionType`: `authCaptureTransaction`
   - `amount`: `amountCents / 100`, two decimals
   - `payment.opaqueData`: `dataDescriptor`, `dataValue`
-  - `order.invoiceNumber`: `VS-` + first 17 uppercase hex chars of sha256(`orderId`) (20 chars). `orderNumber` and `orderId` are never sent. Labs matches on the returned `invoiceNumber` / `transactionId`.
-  - `order.description`: `<AUTHNET_MERCHANT_DESCRIPTOR> | vanta.skin` (always names vanta.skin; the originating storefront is never sent)
+  - `order.invoiceNumber`: the storefront's `orderId` (schema-truncated to 20 chars), exactly as recorded on the Labs order. Never rebranded or hashed.
+  - `order.description`: `<AUTHNET_MERCHANT_DESCRIPTOR> | <originStorefront>` — names the merchant of record and the true originating storefront
+  - `lineItems`: the real goods (sku/name/description/quantity/unit price), when supplied (≤ 30)
   - `tax` `{ amount, name: "Tax" }` — only when `taxCents > 0`
   - `shipping` `{ amount, name: "Shipping" }` — only when `shippingCents > 0`
   - `customer.email` — only when given (≤ 255)
   - `billTo` — only the fields given: `firstName` (50), `lastName` (50), `address` (60), `city` (40), `state` (40), `zip` (20), `country` (60), `phoneNumber` (25, from `customer.phone`)
   - `transactionSettings.setting`: `duplicateWindow = 120`
 
-Never sent: line items, product names, SKUs, customer IP, shipping address.
+Never sent: raw card data, customer IP, shipping address.
 (The SDK itself adds `clientId` = its version string.)
 
 The gateway call has its own timeout (`AUTHNET_TIMEOUT_MS`, default 20000).
@@ -136,7 +145,7 @@ A timeout is `uncertain`, never a decline.
   "ok": true, "action": "charge", "orderId": "order-…",
   "outcome": "captured", "paymentStatus": "captured",
   "retryable": false, "gatewayContacted": true,
-  "transactionId": "60212345678", "refId": "<20 chars>", "invoiceNumber": "VS-<17 hex>",
+  "transactionId": "60212345678", "refId": "<20 chars>", "invoiceNumber": "order-…(≤20)",
   "authCode": "ABC123", "cardLast4": "1111", "cardType": "Visa",
   "amountCents": 4604, "currency": "USD", "sandbox": true,
   "processorCode": "1", "message": "<processor text, internal>",
@@ -304,14 +313,94 @@ Mode: `AUTHNET_SANDBOX`, `AUTHNET_LIVE_APPROVED`, `VERCEL_ENV` (see §1).
 
 Optional: `AUTHNET_SIGNATURE_KEY` (webhooks), `AUTHNET_MERCHANT_DESCRIPTOR`,
 `AUTHNET_TIMEOUT_MS` (20000), `VANTA_HMAC_MAX_SKEW_SECONDS` (300),
-`VANTA_ALLOWED_ORIGIN_STOREFRONTS` (`vanta.skin`).
+`VANTA_ALLOWED_ORIGIN_STOREFRONTS` (`vantalabsresearch.com`).
+
+Embedded component: `VANTA_EMBED_ALLOWED_ORIGINS` (exact https origins allowed
+to iframe the hosted component, default `https://vantalabsresearch.com`),
+`VANTA_PAYMENT_SESSION_TTL_SECONDS` (900), `VANTA_REQUIRE_PAYMENT_SESSION`
+(false; set true once every Labs charge carries a session token).
 
 Callbacks: `VANTA_LABS_SYNC_ENDPOINT_URL`, `VANTA_LABS_SYNC_KEY_ID`,
 `VANTA_LABS_SYNC_SHARED_SECRET`, `VANTA_LABS_SYNC_TIMEOUT_MS` (4000),
 `VANTA_LABS_PROTECTION_BYPASS` (previews only), `VANTA_SYNC_RETRY_TOKEN`,
 `VANTA_SYNC_RETRY_BATCH_SIZE` (25).
 
+## 14) Embedded payment component (hosted on Vanta Skin)
+
+The Vanta Labs checkout embeds a Vanta Skin-hosted payment component in an
+iframe. Raw card data is entered only inside that iframe and is tokenized
+there by Accept.js; the Vanta Labs page and backend only ever see the
+Authorize.net `opaqueData` token. The customer never leaves
+`vantalabsresearch.com`.
+
+### Accept.js iframe support (evaluated before implementation)
+
+Accept.js is supported in this configuration:
+
+- Accept.js executes in whatever window loads it. Inside the iframe it is
+  loaded from the Authorize.net CDN (`https://jstest.authorize.net/v1/Accept.js`
+  in sandbox) and `Accept.dispatchData()` posts directly to the Authorize.net
+  tokenization API over CORS-enabled HTTPS (`apitest.authorize.net`). Neither
+  call depends on the top-level page's origin, so cross-origin framing works.
+- The iframe document must be HTTPS (the Vanta Skin deployment is).
+- The component's CSP allows scripts only from the Authorize.net CDN plus the
+  hash-locked inline bootstrap, and connections only to the Vanta Skin origin
+  and the Authorize.net tokenization endpoints.
+- Only the public API login id and public client key reach the browser (they
+  are designed for client-side use). The transaction key and signature key
+  never leave the server.
+- If the Labs checkout adds a `sandbox` attribute to the iframe it must
+  include `allow-scripts allow-forms allow-same-origin`, or Accept.js cannot
+  run.
+- Accept.js sets no cookies, so third-party cookie blocking does not affect
+  tokenization (relevant for Safari / ITP).
+
+### Flow
+
+1. Labs backend (HMAC-signed) calls `POST /api/payments/session` with
+   `{ orderId, amountCents, currency, originStorefront, embedOrigin }`.
+   `embedOrigin` is the exact https origin of the Labs checkout page and must
+   be in `VANTA_EMBED_ALLOWED_ORIGINS`.
+2. Response: `{ ok, sessionToken, sessionId, expiresAt, embedUrl, sandbox }`.
+   The raw token is returned once; only its SHA-256 hash is stored. Sessions
+   are single-use and expire after `VANTA_PAYMENT_SESSION_TTL_SECONDS`.
+3. Labs checkout iframes `embedUrl`. Reference parent implementation:
+   `assets/js/payment-embed-parent.js` (copy/adapt into the Labs codebase).
+4. The iframe validates the session via `POST /api/payments/session-validate`
+   (browser-facing; token is the bearer credential) and renders the card form.
+5. On submit (in-iframe button, or a `vanta:pay:submit` message from the
+   parent — wire the existing Place Order button to it), the iframe tokenizes
+   the card with Accept.js and posts `vanta:pay:tokenized` with `opaqueData`
+   to the parent.
+6. Labs checkout sends `opaqueData` + `paymentSession` to its backend, which
+   calls `POST /api/payments/charge` as before (HMAC + idempotency). The
+   charge re-validates the session (exact order/amount/storefront match) and
+   consumes it atomically before the gateway call. A session rejection is a
+   definitive 400/409 with `gatewayContacted: false`, never a 502.
+
+### Cross-origin messaging contract
+
+- Messages parent → iframe and iframe → parent always use an explicit target
+  origin (the server-approved `embedOrigin`), never a wildcard.
+- Receivers check `event.origin` for an exact match before reading anything.
+- Every message carries `sessionId` (first 24 hex chars of the token's
+  SHA-256, computable by both sides); mismatched messages are dropped.
+- Message types: `vanta:pay:ready`, `vanta:pay:tokenized` (iframe → parent),
+  `vanta:pay:submit` (parent → iframe), `vanta:pay:error` (iframe → parent).
+- `opaqueData` is forwarded to the Labs backend immediately; it is never
+  logged or persisted in the browser.
+
+### Embedding restrictions
+
+- `GET /api/payments/embed` sends `Content-Security-Policy: frame-ancestors`
+  with exactly the `VANTA_EMBED_ALLOWED_ORIGINS` allowlist; no other site can
+  frame the component.
+- `X-Frame-Options` is deliberately not sent (it cannot express a cross-origin
+  allowlist; `frame-ancestors` supersedes it in modern browsers).
+- Responses are `cache-control: no-store` with `referrer-policy: no-referrer`.
+
 ## Health check (no money moves)
+
 
 `GET /api/payments/health`, signed exactly like the payment calls (canonical
 message over an empty body). `200` proves the bridge secret matches; `401` means

@@ -17,6 +17,15 @@ const {
   planNextDelivery,
   signedLabsPost,
 } = require('./sync');
+const {
+  assertPaymentSessionTokenShape,
+  assertSessionMatchesCharge,
+  generatePaymentSessionToken,
+  hashPaymentSessionToken,
+  isAllowedEmbedOrigin,
+  normalizeOrigin,
+  paymentSessionIdFromToken,
+} = require('./payment-session');
 
 const CHARGE_ENDPOINT = '/api/payments/charge';
 const REFUND_ENDPOINT = '/api/payments/refund';
@@ -187,9 +196,18 @@ function parsePayload(rawBody) {
 
 // The Accept.js nonce is single-use and short-lived, but it is a payment
 // credential all the same; it is not kept in payment_events.
+// The Accept.js nonce and the payment-session bearer token are credentials;
+// neither is kept in payment_events.request_payload.
 function redactPaymentPayload(payload) {
-  if (!payload?.opaqueData?.dataValue) return payload;
-  return { ...payload, opaqueData: { ...payload.opaqueData, dataValue: '[redacted]' } };
+  if (!payload) return payload;
+  let redacted = payload;
+  if (payload.opaqueData?.dataValue) {
+    redacted = { ...redacted, opaqueData: { ...redacted.opaqueData, dataValue: '[redacted]' } };
+  }
+  if (payload.paymentSession) {
+    redacted = { ...redacted, paymentSession: '[redacted]' };
+  }
+  return redacted;
 }
 
 // ---------------------------------------------------------------------------
@@ -446,6 +464,13 @@ function validateChargePayload(config, payload) {
   assertOptionalObject(payload.billTo, 'billTo');
   if (payload.orderNumber !== undefined && typeof payload.orderNumber !== 'string') throw invalid('Invalid orderNumber');
   if (payload.attemptNo !== undefined && !(Number.isInteger(payload.attemptNo) && payload.attemptNo > 0)) throw invalid('Invalid attemptNo');
+  if (payload.paymentSession !== undefined) {
+    try {
+      assertPaymentSessionTokenShape(payload.paymentSession);
+    } catch {
+      throw invalid('Invalid paymentSession');
+    }
+  }
   if (payload.capture === false) throw invalid('Authorization-only charges are not supported');
   if (payload.requireSandbox !== undefined && typeof payload.requireSandbox !== 'boolean') throw invalid('Invalid requireSandbox');
 }
@@ -502,6 +527,77 @@ function buildChargeBody({ config, payload, outcome, gw, refId, invoiceNumber })
   };
 }
 
+// Validates and spends the short-lived payment session bound to this charge.
+// The session proves the charge amount/order/storefront match what the Vanta
+// Labs backend signed when it created the session for the embedded checkout.
+async function consumeChargePaymentSession(store, payload) {
+  const tokenHash = hashPaymentSessionToken(payload.paymentSession);
+  const record = await store.findPaymentSessionByTokenHash(tokenHash);
+
+  try {
+    assertSessionMatchesCharge(record, payload, new Date());
+  } catch (error) {
+    if (error.statusCode === 409) {
+      throw new BridgeError({ statusCode: 409, outcome: 'conflict', message: error.message, retryable: false });
+    }
+    throw invalid(error.message);
+  }
+
+  const consumed = await store.consumePaymentSession(tokenHash);
+  if (!consumed) {
+    throw new BridgeError({ statusCode: 409, outcome: 'conflict', message: 'Payment session has already been used', retryable: false });
+  }
+
+  return record;
+}
+
+// Creates a short-lived, single-use payment session for the hosted payment
+// component embedded in the Vanta Labs checkout. The raw token is returned
+// once and only its SHA-256 hash is stored.
+async function handleCreatePaymentSession(req, rawBody, deps) {
+  const d = resolveDeps(deps);
+  const { config, store } = await authenticate(req, rawBody, d);
+  assertGatewayModeUsable(config);
+
+  const payload = parsePayload(rawBody);
+  assertString(payload.orderId, 'orderId');
+  assertInteger(payload.amountCents, 'amountCents');
+  assertUsd(payload.currency, { required: true });
+  assertString(payload.originStorefront, 'originStorefront');
+  assertAllowedStorefront(config, payload.originStorefront);
+
+  const embedOrigin = normalizeOrigin(payload.embedOrigin);
+  if (!embedOrigin || !isAllowedEmbedOrigin(config.bridge.allowedEmbedOrigins, embedOrigin)) {
+    throw invalid('embedOrigin is not approved');
+  }
+
+  const token = generatePaymentSessionToken();
+  const expiresAt = new Date(d.now().getTime() + config.bridge.paymentSessionTtlSeconds * 1000).toISOString();
+
+  await store.createPaymentSession({
+    token_hash: hashPaymentSessionToken(token),
+    order_id: payload.orderId,
+    amount_cents: payload.amountCents,
+    currency: 'USD',
+    origin_storefront: String(payload.originStorefront).trim().toLowerCase(),
+    parent_origin: embedOrigin,
+    expires_at: expiresAt,
+  });
+
+  return {
+    statusCode: 200,
+    body: {
+      ok: true,
+      sessionToken: token,
+      sessionId: paymentSessionIdFromToken(token),
+      expiresAt,
+      embedUrl: `/api/payments/embed?session=${token}`,
+      sandbox: config.authnet.sandbox,
+    },
+    replayed: false,
+  };
+}
+
 async function handleCharge(req, rawBody, deps) {
   const d = resolveDeps(deps);
   const { config, store, signed } = await authenticate(req, rawBody, d);
@@ -519,11 +615,26 @@ async function handleCharge(req, rawBody, deps) {
   const invoiceNumber = invoiceNumberFor(payload);
   const bodyExtras = { action: 'charge', orderId: payload.orderId, refId, amountCents: payload.amountCents, currency: 'USD', sandbox: config.authnet.sandbox };
 
+  if (config.bridge.requirePaymentSession && payload.paymentSession === undefined) {
+    throw invalid('Missing required paymentSession');
+  }
+
   let gw = null;
   const result = await withIdempotency(
     store,
     { endpoint: CHARGE_ENDPOINT, idempotencyKey, requestHash: signed.requestHash, bodyExtras, log: d.log },
     async () => {
+      if (payload.paymentSession !== undefined) {
+        // A session rejection is definitive and pre-gateway: return it as a
+        // normal (persisted, replayable) result, never as 502 uncertain.
+        const sessionFailure = await consumeChargePaymentSession(store, payload).then(() => null, (error) => error);
+        if (sessionFailure) {
+          const bridgeError = sessionFailure instanceof BridgeError
+            ? sessionFailure
+            : unavailable('Payment session records are temporarily unavailable');
+          return toErrorResponse(bridgeError, { operation: 'charge' });
+        }
+      }
       gw = await d.gateway.charge(config, payload, { refId });
       const outcome = gw.outcome;
       return { statusCode: OUTCOME_STATUS[outcome], body: buildChargeBody({ config, payload, outcome, gw, refId, invoiceNumber }) };
@@ -1200,7 +1311,9 @@ module.exports = {
   VOID_ENDPOINT,
   assertChargeLineItems,
   assertNoSensitiveCardFields,
+  consumeChargePaymentSession,
   handleCharge,
+  handleCreatePaymentSession,
   handleReconcile,
   handleRefund,
   handleVoid,

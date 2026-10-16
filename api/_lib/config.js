@@ -1,3 +1,5 @@
+const { normalizeOrigin } = require('./payment-session');
+
 function configError(message) {
   // The message names the missing variable for the server log only. It is
   // never put in a response body (see toErrorResponse in service.js).
@@ -103,6 +105,19 @@ function hmacMaxSkewSeconds() {
   return positiveNumber('VANTA_HMAC_MAX_SKEW_SECONDS', 300);
 }
 
+// Exact https origins allowed to iframe the hosted payment component
+// (Vanta Labs checkout pages). Invalid entries fail loudly at load time
+// instead of silently narrowing the allowlist.
+function loadAllowedEmbedOrigins() {
+  return optional('VANTA_EMBED_ALLOWED_ORIGINS', 'https://vantalabsresearch.com')
+    .split(',')
+    .map((value) => {
+      const origin = normalizeOrigin(value);
+      if (!origin) throw configError(`Invalid origin in VANTA_EMBED_ALLOWED_ORIGINS: ${value.trim()}`);
+      return origin;
+    });
+}
+
 function loadConfig() {
   const hmacSecrets = loadHmacSecrets();
   if (!Object.keys(hmacSecrets).length) {
@@ -128,10 +143,13 @@ function loadConfig() {
       secrets: hmacSecrets,
     },
     bridge: {
-      allowedOriginStorefronts: optional('VANTA_ALLOWED_ORIGIN_STOREFRONTS', 'vanta.skin')
+      allowedOriginStorefronts: optional('VANTA_ALLOWED_ORIGIN_STOREFRONTS', 'vantalabsresearch.com')
         .split(',')
         .map((value) => value.trim().toLowerCase())
         .filter(Boolean),
+      allowedEmbedOrigins: loadAllowedEmbedOrigins(),
+      paymentSessionTtlSeconds: positiveNumber('VANTA_PAYMENT_SESSION_TTL_SECONDS', 900),
+      requirePaymentSession: envBool('VANTA_REQUIRE_PAYMENT_SESSION', false),
     },
     supabase: {
       url: required('SUPABASE_URL'),

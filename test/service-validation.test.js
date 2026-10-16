@@ -65,9 +65,26 @@ test('normalizeRefundCardReference accepts only safe formats', () => {
   assert.throws(() => normalizeRefundCardReference('123'), /last 4 digits/);
 });
 
+// The payment session token is a bearer credential: it is redacted from
+// payment_events.request_payload alongside the Accept.js nonce.
+test('redactPaymentPayload drops paymentSession bearer tokens', () => {
+  const payload = {
+    orderId: 'o',
+    paymentSession: 'vps_' + 'a'.repeat(64),
+    opaqueData: { dataDescriptor: 'COMMON.ACCEPT.INAPP.PAYMENT', dataValue: 'secret-token' },
+  };
+  const redacted = redactPaymentPayload(payload);
+  assert.equal(redacted.paymentSession, '[redacted]');
+  assert.equal(redacted.opaqueData.dataValue, '[redacted]');
+  assert.equal(redacted.orderId, 'o');
+  assert.equal(JSON.stringify(redacted).includes('vps_'), false);
+  assert.equal(payload.paymentSession.startsWith('vps_'), true);
+});
+
 // The full Authorize.Net field inventory is pinned in authnet-payload.test.js.
-// Line items and product names are still never sent, even when supplied.
-test('buildChargeRequest sends no line items or product names', () => {
+// Line items name the real goods, the invoice is the storefront's order id,
+// and the description names the true originating storefront (written approval).
+test('buildChargeRequest itemises the real goods and the true storefront', () => {
   const config = { authnet: { apiLoginId: 'l', transactionKey: 't', merchantDescriptor: 'Vanta Skin' } };
   const json = buildChargeRequest(config, {
     orderId: 'order-2f5da385-b1b1-42be-a806-80adb74205f4',
@@ -78,11 +95,10 @@ test('buildChargeRequest sends no line items or product names', () => {
     lineItems: [{ sku: 'bpc-157', name: 'BPC-157 5mg', quantity: 1, unitPriceCents: 2999 }],
   }, { refId: 'r' }).getJSON().createTransactionRequest.transactionRequest;
 
-  assert.equal(json.lineItems, undefined);
-  assert.equal(JSON.stringify(json).includes('BPC-157'), false);
+  assert.equal(json.lineItems.lineItem[0].name, 'BPC-157 5mg');
   assert.equal(json.transactionType, 'authCaptureTransaction');
   assert.equal(json.amount, '46.04');
   assert.equal(json.payment.opaqueData.dataValue, 'tok');
-  assert.match(json.order.invoiceNumber, /^VS-[0-9A-F]{17}$/);
-  assert.equal(json.order.description, 'Vanta Skin | vanta.skin');
+  assert.equal(json.order.invoiceNumber, 'order-2f5da385-b1b1-');
+  assert.equal(json.order.description, 'Vanta Skin | vantalabsresearch.com');
 });
