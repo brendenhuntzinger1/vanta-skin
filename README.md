@@ -80,6 +80,10 @@ Migration file:
 
 This creates durable idempotency/replay/webhook/payment audit tables and optional payment columns on `orders` if missing.
 
+### Vanta Labs integration handoff
+
+See `/home/runner/work/vanta-skin/vanta-skin/VANTA_LABS_HANDOFF.md` for the Stage 2 integration contract (headers, canonical signing format, payloads, response semantics, and Supabase flow expectations).
+
 ### Browser tokenization
 
 - Checkout now loads `assets/js/payments.js`.
