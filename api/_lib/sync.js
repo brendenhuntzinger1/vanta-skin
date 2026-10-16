@@ -40,16 +40,25 @@ async function deliverSyncEvent(config, eventPayload) {
   const timeout = setTimeout(() => controller.abort(), config.labsSync.timeoutMs);
 
   try {
+    const headers = {
+      'content-type': 'application/json',
+      'x-vanta-key-id': config.labsSync.outboundKeyId,
+      'x-vanta-timestamp': String(timestamp),
+      'x-vanta-nonce': nonce,
+      'x-vanta-signature': signature,
+      'x-idempotency-key': eventPayload.eventId,
+    };
+    // Gets the callback past Vercel Deployment Protection on a Labs preview,
+    // which otherwise answers with a 302 to Vercel's SSO page. A header, not a
+    // query string, so the secret stays out of access logs. Labs still checks
+    // the HMAC signature.
+    if (config.labsSync.protectionBypass) {
+      headers['x-vercel-protection-bypass'] = config.labsSync.protectionBypass;
+    }
+
     const res = await fetch(config.labsSync.endpointUrl, {
       method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        'x-vanta-key-id': config.labsSync.outboundKeyId,
-        'x-vanta-timestamp': String(timestamp),
-        'x-vanta-nonce': nonce,
-        'x-vanta-signature': signature,
-        'x-idempotency-key': eventPayload.eventId,
-      },
+      headers,
       body,
       signal: controller.signal,
     });

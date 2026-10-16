@@ -75,6 +75,9 @@ function loadConfig() {
       timeoutMs: optionalNumber('VANTA_LABS_SYNC_TIMEOUT_MS', 8000),
       retryAuthToken: optional('VANTA_SYNC_RETRY_TOKEN', ''),
       retryBatchSize: optionalNumber('VANTA_SYNC_RETRY_BATCH_SIZE', 25),
+      // Vanta Labs project's "Protection Bypass for Automation" secret, needed
+      // only while Labs is behind Vercel Deployment Protection (its previews).
+      protectionBypass: optional('VANTA_LABS_PROTECTION_BYPASS', '').trim(),
     },
   };
 }

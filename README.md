@@ -69,6 +69,7 @@ Optional:
 - `VANTA_LABS_SYNC_KEY_ID`
 - `VANTA_LABS_SYNC_SHARED_SECRET`
 - `VANTA_LABS_SYNC_TIMEOUT_MS` (default `8000`)
+- `VANTA_LABS_PROTECTION_BYPASS` (Vanta Labs project's Vercel "Protection Bypass for Automation" secret; only while Labs is behind Vercel Deployment Protection, e.g. its previews. Sent as the `x-vercel-protection-bypass` header on callbacks. HMAC is still required.)
 - `VANTA_SYNC_RETRY_TOKEN` (required to call `/api/payments/sync-retry`)
 - `VANTA_SYNC_RETRY_BATCH_SIZE` (default `25`)
 
@@ -108,3 +109,16 @@ See `/home/runner/work/vanta-skin/vanta-skin/VANTA_LABS_HANDOFF.md` for the Stag
 6. Confirm raw card fields are rejected (only `opaqueData` accepted).
 7. Confirm callbacks reach Vanta Labs and duplicate callbacks are deduplicated by `eventId`.
 8. Confirm failed callbacks are retried with `/api/payments/sync-retry`.
+
+## Vercel Deployment Protection (previews)
+
+Preview deployments of both projects are behind Vercel Authentication. Keep it
+on. Server-to-server calls carry the *other* project's "Protection Bypass for
+Automation" secret in the `x-vercel-protection-bypass` header:
+
+- Labs -> Skin: Labs sends vanta-skin's secret (`VANTA_SKIN_PROTECTION_BYPASS` on vanta-labs).
+- Skin -> Labs callbacks: Skin sends vanta-labs's secret (`VANTA_LABS_PROTECTION_BYPASS` here).
+- Authorize.net -> Skin webhook (`/api/payments/webhook`): Authorize.net cannot
+  add headers, so a *sandbox* webhook pointed at a preview needs
+  `?x-vercel-protection-bypass=<vanta-skin secret>` on the URL. The
+  `X-ANET-Signature` check still applies. Never do this for production.

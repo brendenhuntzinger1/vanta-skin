@@ -313,4 +313,5 @@ Sync callback controls:
 - `VANTA_LABS_SYNC_ENDPOINT_URL`
 - `VANTA_LABS_SYNC_KEY_ID`
 - `VANTA_LABS_SYNC_SHARED_SECRET`
+- `VANTA_LABS_PROTECTION_BYPASS` (Labs project's Vercel automation-bypass secret; previews only)
 - `VANTA_SYNC_RETRY_TOKEN`
