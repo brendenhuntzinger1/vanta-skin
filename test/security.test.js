@@ -42,3 +42,10 @@ test('verifyWebhookSignature supports hex-encoded signature keys', () => {
   const signature = `sha512=${createHmac('sha512', Buffer.from(hexKey, 'hex')).update(payload, 'utf8').digest('hex')}`;
   assert.equal(verifyWebhookSignature(hexKey, payload, signature), true);
 });
+
+// An unset AUTHNET_SIGNATURE_KEY used to accept every webhook unsigned, so
+// anyone could post "authcapture.created" for a known transaction id.
+test('verifyWebhookSignature fails closed when no signature key is configured', () => {
+  assert.equal(verifyWebhookSignature('', '{"event":"x"}', 'sha512=abc'), false);
+  assert.equal(verifyWebhookSignature(undefined, '{"event":"x"}', undefined), false);
+});

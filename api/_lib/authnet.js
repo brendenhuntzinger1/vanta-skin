@@ -44,7 +44,18 @@ function mapCode(response) {
   return response?.transactionResponse?.responseCode || response?.messages?.resultCode || null;
 }
 
-async function chargeOpaqueData(config, payload) {
+function extendedAmount(name, cents) {
+  const amount = new APIContracts.ExtendedAmountType();
+  amount.setAmount(moneyFromCents(cents));
+  amount.setName(name);
+  return amount;
+}
+
+// The transaction record says whose sale it is: the originating storefront and
+// its own order number first, then that this service processed it. Line items
+// are the real goods at their own prices; shipping and tax are itemised in
+// Authorize.net's own fields. amountCents is the authoritative charge.
+function buildChargeRequest(config, payload) {
   const transactionRequestType = new APIContracts.TransactionRequestType();
   transactionRequestType.setTransactionType(payload.capture === false ? APIContracts.TransactionTypeEnum.AUTHONLYTRANSACTION : APIContracts.TransactionTypeEnum.AUTHCAPTURETRANSACTION);
   transactionRequestType.setAmount(moneyFromCents(payload.amountCents));
@@ -58,11 +69,15 @@ async function chargeOpaqueData(config, payload) {
   transactionRequestType.setPayment(paymentType);
 
   if (payload.orderId || payload.originStorefront) {
+    const orderRef = String(payload.orderNumber || payload.orderId || '').trim();
     const order = new APIContracts.OrderType();
-    order.setInvoiceNumber(String(payload.orderId || '').slice(0, 20));
-    order.setDescription(`${config.authnet.merchantDescriptor} | ${payload.originStorefront || 'unknown storefront'}`.slice(0, 255));
+    order.setInvoiceNumber(orderRef.slice(0, 20));
+    order.setDescription(`${payload.originStorefront || 'unknown storefront'} order ${orderRef} | processed by ${config.authnet.merchantDescriptor}`.slice(0, 255));
     transactionRequestType.setOrder(order);
   }
+
+  if (Number(payload.shippingCents) > 0) transactionRequestType.setShipping(extendedAmount('Shipping', payload.shippingCents));
+  if (Number(payload.taxCents) > 0) transactionRequestType.setTax(extendedAmount('Tax', payload.taxCents));
 
   if (Array.isArray(payload.lineItems) && payload.lineItems.length) {
     const lines = payload.lineItems.slice(0, 30).map((item) => {
@@ -89,7 +104,11 @@ async function chargeOpaqueData(config, payload) {
   const request = new APIContracts.CreateTransactionRequest();
   request.setMerchantAuthentication(merchantAuth(config));
   request.setTransactionRequest(transactionRequestType);
+  return request;
+}
 
+async function chargeOpaqueData(config, payload) {
+  const request = buildChargeRequest(config, payload);
   const controller = new APIControllers.CreateTransactionController(request.getJSON());
   const response = await execute(controller, config.authnet.sandbox);
 
@@ -160,6 +179,7 @@ async function refundTransaction(config, payload) {
 }
 
 module.exports = {
+  buildChargeRequest,
   chargeOpaqueData,
   normalizeRefundCardReference,
   refundTransaction,

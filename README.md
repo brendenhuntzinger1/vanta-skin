@@ -12,7 +12,12 @@ Static e-commerce site (plain HTML/CSS/JS) with Vercel serverless payment APIs f
 ## Pages
 Home, Shop, Product, Cart, Checkout, Our Story, Contact, FAQ, Track Order, Shipping, Returns & Refunds, Privacy, Terms, Product Disclaimer, Accessibility, 404.
 
-## Authorize.net payment bridge (approved multi-storefront architecture)
+## Authorize.net payment bridge (multi-storefront architecture)
+
+> Sandbox only. Live processing for any storefront other than Vanta Skin needs
+> written confirmation from Authorize.net and the acquiring bank that this
+> merchant account is approved for that storefront and its product category.
+> No such approval is on file in this repository.
 
 This repository now includes server-to-server payment endpoints under `/api/payments`:
 
@@ -30,7 +35,7 @@ Vanta Labs remains the system of record for orders, fulfillment, inventory, and 
 - Persistent nonce replay protection (`payment_request_replays`)
 - Persistent idempotency keys with response replay (`payment_idempotency`)
 - Server-side secret handling only (`AUTHNET_TRANSACTION_KEY`, Supabase service role key)
-- Authorize.net webhook signature verification (`X-ANET-SIGNATURE`) when `AUTHNET_SIGNATURE_KEY` is configured
+- Authorize.net webhook signature verification (`X-ANET-SIGNATURE`); fails closed, so every webhook is refused until `AUTHNET_SIGNATURE_KEY` is set
 
 ### Required environment variables
 

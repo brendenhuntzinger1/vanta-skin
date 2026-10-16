@@ -39,17 +39,35 @@ function assertNoSensitiveCardFields(payload) {
   }
 }
 
-function assertChargeLineItemsAmount(payload) {
-  if (!Array.isArray(payload.lineItems) || payload.lineItems.length === 0) return;
-  const sum = payload.lineItems.reduce((acc, item) => {
-    const qty = Number(item?.quantity || 0);
-    const unit = Number(item?.unitPriceCents || 0);
-    return acc + Math.round(qty * unit);
-  }, 0);
+function assertNonNegativeCents(value, field) {
+  if (value === undefined || value === null) return;
+  if (!Number.isInteger(value) || value < 0) throw new Error(`Invalid ${field}`);
+}
 
-  if (sum !== Number(payload.amountCents)) {
-    throw new Error(`lineItems amount total (${sum}) does not match amountCents (${payload.amountCents})`);
+// amountCents is the authoritative charge: the originating storefront computes
+// it from its order and signs it. Line items describe the real goods at their
+// own prices and are passed to Authorize.net as such; coupons, free items and
+// credits mean they need not add up to the total, so only their shape is
+// checked here.
+function assertChargeLineItems(payload) {
+  assertNonNegativeCents(payload.shippingCents, 'shippingCents');
+  assertNonNegativeCents(payload.taxCents, 'taxCents');
+  if (payload.lineItems === undefined) return;
+  if (!Array.isArray(payload.lineItems)) throw new Error('Invalid lineItems');
+  for (const item of payload.lineItems) {
+    const quantity = Number(item?.quantity);
+    const unit = item?.unitPriceCents;
+    if (!Number.isInteger(quantity) || quantity <= 0 || !Number.isInteger(unit) || unit < 0) {
+      throw new Error('Invalid lineItems entry: quantity must be a positive integer and unitPriceCents a non-negative integer');
+    }
   }
+}
+
+// The Accept.js nonce is single-use and short-lived, but it is a payment
+// credential all the same; it is not kept in payment_events.
+function redactPaymentPayload(payload) {
+  if (!payload?.opaqueData?.dataValue) return payload;
+  return { ...payload, opaqueData: { ...payload.opaqueData, dataValue: '[redacted]' } };
 }
 
 function mapWebhookEventToOrderStatus(eventType) {
@@ -117,7 +135,7 @@ async function handleCharge(req, rawBody, payload) {
   assertString(payload.opaqueData?.dataValue, 'opaqueData.dataValue');
   assertAllowedStorefront(config, payload.originStorefront);
   assertNoSensitiveCardFields(payload);
-  assertChargeLineItemsAmount(payload);
+  assertChargeLineItems(payload);
 
   const endpoint = '/api/payments/charge';
   return withIdempotency(supabase, endpoint, req.headers['x-idempotency-key'], signed.requestHash, async () => {
@@ -132,7 +150,7 @@ async function handleCharge(req, rawBody, payload) {
       currency: payload.currency || config.authnet.defaultCurrency,
       status: paymentStatus,
       authnet_transaction_id: result.transactionId,
-      request_payload: payload,
+      request_payload: redactPaymentPayload(payload),
       response_payload: result.raw,
     });
 
@@ -483,9 +501,10 @@ async function retryPendingSyncDeliveries(authTokenFromRequest) {
 }
 
 module.exports = {
-  assertChargeLineItemsAmount,
+  assertChargeLineItems,
   assertNoSensitiveCardFields,
   mapWebhookEventToOrderStatus,
+  redactPaymentPayload,
   handleCharge,
   handleRefund,
   retryPendingSyncDeliveries,
