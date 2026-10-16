@@ -11,7 +11,7 @@ const {
   saveIdempotency,
   upsertPaymentSyncEvent,
 } = require('./supabase');
-const { verifyRequestSignature, verifyWebhookSignature } = require('./security');
+const { digestHex, safeEqualHex, verifyRequestSignature, verifyWebhookSignature } = require('./security');
 const { chargeOpaqueData, normalizeRefundCardReference, refundTransaction, voidTransaction } = require('./authnet');
 const { assertLabsSyncConfigured, buildSyncEventKey, deliverSyncEvent } = require('./sync');
 
@@ -466,7 +466,7 @@ async function retryPendingSyncDeliveries(authTokenFromRequest) {
   if (!config.labsSync.retryAuthToken) {
     throw new Error('VANTA_SYNC_RETRY_TOKEN is not configured');
   }
-  if (authTokenFromRequest !== config.labsSync.retryAuthToken) {
+  if (!safeEqualHex(digestHex(String(authTokenFromRequest || '')), digestHex(config.labsSync.retryAuthToken))) {
     const err = new Error('Unauthorized retry token');
     err.statusCode = 401;
     throw err;

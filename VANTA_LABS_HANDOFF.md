@@ -317,3 +317,19 @@ Sync callback controls:
 - `VANTA_LABS_SYNC_SHARED_SECRET`
 - `VANTA_LABS_PROTECTION_BYPASS` (Labs project's Vercel automation-bypass secret; previews only)
 - `VANTA_SYNC_RETRY_TOKEN`
+
+## Health check (no money moves)
+
+`GET /api/payments/health`, signed exactly like the payment calls (same headers,
+canonical message over an empty body). A `200` proves the caller's bridge secret
+matches `VANTA_HMAC_SHARED_SECRET`; `401` means it does not.
+
+`GET /api/payments/health?callback=1` also sends Labs a signed
+`{ "type": "ping", "eventId": "ping:<uuid>", "challenge": "<hex>", "sandbox": <bool> }`
+to `VANTA_LABS_SYNC_ENDPOINT_URL`. Labs answers `{ "pong": "<challenge>" }` only
+after verifying the signature, so `checks.labsCallback = "verified"` proves both
+copies of `VANTA_LABS_SYNC_SHARED_SECRET` match.
+
+The response contains states only (`present`/`missing`, `reachable`/`error:<code>`,
+`verified`/`failed:<status>`), never configuration values. Nonces are not stored;
+nothing is written.

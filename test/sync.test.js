@@ -93,3 +93,18 @@ test('loadConfig reads VANTA_LABS_PROTECTION_BYPASS into labsSync.protectionBypa
     process.env = saved;
   }
 });
+
+// A protected Labs preview answers an unauthenticated callback with a 302 to
+// Vercel's SSO page. Followed, that page answers 200 — and the callback was
+// counted as delivered while Labs never saw it.
+test('deliverSyncEvent does not follow redirects: a 302 is a failed delivery', async (t) => {
+  let init;
+  t.mock.method(globalThis, 'fetch', async (_url, i) => {
+    init = i;
+    return new Response(null, { status: 302, headers: { location: 'https://vercel.com/sso-api' } });
+  });
+  const attempt = await deliverSyncEvent(configuredSync(), { eventId: 'evt-1' });
+  assert.equal(init.redirect, 'manual');
+  assert.equal(attempt.delivered, false);
+  assert.equal(attempt.httpStatus, 302);
+});
