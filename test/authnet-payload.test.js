@@ -84,6 +84,22 @@ test('charge request: description always names vanta.skin, never the originating
   assert.equal(tx.order.description.includes('vantalabsresearch.com'), false);
 });
 
+test('no request sent to Authorize.Net carries Labs data', () => {
+  const payload = fullPayload();
+  const key = `vskin:charge:${payload.orderId}:2`;
+  const requests = [
+    buildChargeRequest(config, payload, { idempotencyKey: key }),
+    buildRefundRequest(config, { ...payload, transactionId: '60212345678', cardNumberMasked: '1111' }, { refId: refIdFor(key) }),
+    buildVoidRequest(config, { ...payload, transactionId: '60212345678' }, { refId: refIdFor(key) }),
+  ];
+  for (const request of requests) {
+    const text = JSON.stringify(wire(request)).toLowerCase();
+    assert.equal(text.includes('vantalabs'), false);
+    assert.equal(text.includes('vl-10042'), false);
+    assert.equal(text.includes(payload.orderId.toLowerCase()), false);
+  }
+});
+
 test('charge request: refId is the first 20 hex chars of sha256(idempotency key)', () => {
   const key = 'vskin:charge:order-2f5da385:2';
   const request = build(fullPayload(), key);
