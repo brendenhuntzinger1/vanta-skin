@@ -67,7 +67,7 @@ authentication provider. Nothing is sent for it.
 
 Charge: `refId` (sha256 of the idempotency key, 20 chars), `authCaptureTransaction`,
 amount, `opaqueData`, `order.invoiceNumber` (order number, else order id, 20
-chars), `order.description` (`<AUTHNET_MERCHANT_DESCRIPTOR> | <originStorefront>`),
+chars), `order.description` (`<AUTHNET_MERCHANT_DESCRIPTOR> | vanta.skin`),
 tax and shipping amounts when > 0, `customer.email` when given, `billTo` (name,
 address, city, state, zip, country, phone) when given, truncated to
 Authorize.net's limits, and `duplicateWindow = 120`. No line items, product names
@@ -105,7 +105,7 @@ or:
 Optional:
 
 - `VANTA_HMAC_MAX_SKEW_SECONDS` (default `300`; non-numeric, zero or negative values fall back to `300`)
-- `VANTA_ALLOWED_ORIGIN_STOREFRONTS` (comma-separated allowlist, default `vantalabsresearch.com`)
+- `VANTA_ALLOWED_ORIGIN_STOREFRONTS` (comma-separated allowlist, default `vanta.skin`)
 
 #### Supabase
 

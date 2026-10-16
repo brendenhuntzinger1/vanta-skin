@@ -24,6 +24,9 @@ const LIMITS = Object.freeze({
 // own idempotency keys.
 const DUPLICATE_WINDOW_SECONDS = 120;
 
+// The only storefront domain Authorize.Net ever sees in order.description.
+const STOREFRONT_DOMAIN = 'vanta.skin';
+
 class GatewayTimeoutError extends Error {
   constructor(timeoutMs) {
     super(`Authorize.Net did not answer within ${timeoutMs}ms`);
@@ -141,8 +144,8 @@ function createTransactionRequest(config, transactionRequestType, refId) {
 //   refId, transactionType, amount, payment.opaqueData, order.invoiceNumber,
 //   order.description, tax / shipping (when > 0), customer.email (when given),
 //   billTo (when given), transactionSettings.duplicateWindow.
-// No line items, no product names, no customer IP. The description keeps
-// naming the originating storefront.
+// No line items, no product names, no customer IP. The description always
+// names vanta.skin — the originating storefront is never sent.
 function buildChargeRequest(config, payload, { refId, idempotencyKey } = {}) {
   const transactionRequestType = new APIContracts.TransactionRequestType();
   transactionRequestType.setTransactionType(APIContracts.TransactionTypeEnum.AUTHCAPTURETRANSACTION);
@@ -157,7 +160,7 @@ function buildChargeRequest(config, payload, { refId, idempotencyKey } = {}) {
 
   const order = new APIContracts.OrderType();
   order.setInvoiceNumber(invoiceNumberFor(payload));
-  order.setDescription(`${config.authnet.merchantDescriptor} | ${payload.originStorefront || 'unknown storefront'}`.slice(0, LIMITS.description));
+  order.setDescription(`${config.authnet.merchantDescriptor} | ${STOREFRONT_DOMAIN}`.slice(0, LIMITS.description));
   transactionRequestType.setOrder(order);
 
   if (Number.isInteger(payload.taxCents) && payload.taxCents > 0) {

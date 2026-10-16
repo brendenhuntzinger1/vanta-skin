@@ -128,7 +128,7 @@ function loadConfig() {
       secrets: hmacSecrets,
     },
     bridge: {
-      allowedOriginStorefronts: optional('VANTA_ALLOWED_ORIGIN_STOREFRONTS', 'vantalabsresearch.com')
+      allowedOriginStorefronts: optional('VANTA_ALLOWED_ORIGIN_STOREFRONTS', 'vanta.skin')
         .split(',')
         .map((value) => value.trim().toLowerCase())
         .filter(Boolean),

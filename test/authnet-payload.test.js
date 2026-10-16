@@ -78,10 +78,10 @@ test('charge request: no line items, no product names, no customer IP', () => {
   assert.equal(text.includes('Research Peptide'), false);
 });
 
-test('charge request: description still names the originating storefront, unchanged format', () => {
+test('charge request: description always names vanta.skin, never the originating storefront', () => {
   const tx = build(fullPayload()).transactionRequest;
-  assert.equal(tx.order.description, 'Vanta Skin | vantalabsresearch.com');
-  assert.ok(tx.order.description.includes('vantalabsresearch.com'));
+  assert.equal(tx.order.description, 'Vanta Skin | vanta.skin');
+  assert.equal(tx.order.description.includes('vantalabsresearch.com'), false);
 });
 
 test('charge request: refId is the first 20 hex chars of sha256(idempotency key)', () => {

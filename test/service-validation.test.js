@@ -84,5 +84,5 @@ test('buildChargeRequest sends no line items or product names', () => {
   assert.equal(json.amount, '46.04');
   assert.equal(json.payment.opaqueData.dataValue, 'tok');
   assert.equal(json.order.invoiceNumber, 'order-2f5da385-b1b1-');
-  assert.equal(json.order.description, 'Vanta Skin | vantalabsresearch.com');
+  assert.equal(json.order.description, 'Vanta Skin | vanta.skin');
 });

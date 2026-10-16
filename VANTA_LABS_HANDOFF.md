@@ -116,7 +116,7 @@ builds, shape-checked, and **never sent**.
   - `amount`: `amountCents / 100`, two decimals
   - `payment.opaqueData`: `dataDescriptor`, `dataValue`
   - `order.invoiceNumber`: `orderNumber` if 1–20 characters, else the first 20 characters of `orderId`
-  - `order.description`: `<AUTHNET_MERCHANT_DESCRIPTOR> | <originStorefront>` (names the originating storefront; unchanged)
+  - `order.description`: `<AUTHNET_MERCHANT_DESCRIPTOR> | vanta.skin` (always names vanta.skin; the originating storefront is never sent)
   - `tax` `{ amount, name: "Tax" }` — only when `taxCents > 0`
   - `shipping` `{ amount, name: "Shipping" }` — only when `shippingCents > 0`
   - `customer.email` — only when given (≤ 255)
@@ -304,7 +304,7 @@ Mode: `AUTHNET_SANDBOX`, `AUTHNET_LIVE_APPROVED`, `VERCEL_ENV` (see §1).
 
 Optional: `AUTHNET_SIGNATURE_KEY` (webhooks), `AUTHNET_MERCHANT_DESCRIPTOR`,
 `AUTHNET_TIMEOUT_MS` (20000), `VANTA_HMAC_MAX_SKEW_SECONDS` (300),
-`VANTA_ALLOWED_ORIGIN_STOREFRONTS` (`vantalabsresearch.com`).
+`VANTA_ALLOWED_ORIGIN_STOREFRONTS` (`vanta.skin`).
 
 Callbacks: `VANTA_LABS_SYNC_ENDPOINT_URL`, `VANTA_LABS_SYNC_KEY_ID`,
 `VANTA_LABS_SYNC_SHARED_SECRET`, `VANTA_LABS_SYNC_TIMEOUT_MS` (4000),
