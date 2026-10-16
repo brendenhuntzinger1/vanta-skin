@@ -1,8 +1,11 @@
 const { loadConfig } = require('./config');
 const {
+  consumePaymentSession,
+  createPaymentSession,
   createSupabase,
   findLatestPaymentEventByTransaction,
   findIdempotency,
+  findPaymentSessionByTokenHash,
   listPendingPaymentSyncEvents,
   markPaymentSyncDeliveryAttempt,
   recordPaymentEvent,
@@ -11,6 +14,15 @@ const {
   saveIdempotency,
   upsertPaymentSyncEvent,
 } = require('./supabase');
+const {
+  assertPaymentSessionTokenShape,
+  assertSessionMatchesCharge,
+  generatePaymentSessionToken,
+  hashPaymentSessionToken,
+  isAllowedEmbedOrigin,
+  normalizeOrigin,
+  paymentSessionIdFromToken,
+} = require('./payment-session');
 const { digestHex, safeEqualHex, verifyRequestSignature, verifyWebhookSignature } = require('./security');
 const { chargeOpaqueData, normalizeRefundCardReference, refundTransaction, voidTransaction } = require('./authnet');
 const { assertLabsSyncConfigured, buildSyncEventKey, deliverSyncEvent } = require('./sync');
@@ -64,10 +76,18 @@ function assertChargeLineItems(payload) {
 }
 
 // The Accept.js nonce is single-use and short-lived, but it is a payment
-// credential all the same; it is not kept in payment_events.
+// credential all the same; it is not kept in payment_events. The payment
+// session token is a bearer credential too and is likewise redacted.
 function redactPaymentPayload(payload) {
-  if (!payload?.opaqueData?.dataValue) return payload;
-  return { ...payload, opaqueData: { ...payload.opaqueData, dataValue: '[redacted]' } };
+  if (!payload) return payload;
+  let redacted = payload;
+  if (payload.opaqueData?.dataValue) {
+    redacted = { ...redacted, opaqueData: { ...redacted.opaqueData, dataValue: '[redacted]' } };
+  }
+  if (payload.paymentSession) {
+    redacted = { ...redacted, paymentSession: '[redacted]' };
+  }
+  return redacted;
 }
 
 function mapWebhookEventToOrderStatus(eventType) {
@@ -125,6 +145,73 @@ async function withIdempotency(supabase, endpoint, idempotencyKey, requestHash, 
   return { ...result, replayed: false };
 }
 
+// Creates a short-lived, single-use payment session for the hosted payment
+// component embedded in the Vanta Labs checkout. The raw token is returned
+// once and only its SHA-256 hash is stored.
+async function handleCreatePaymentSession(req, rawBody, payload) {
+  const { config, supabase } = await authenticateBridgeRequest(req, rawBody);
+
+  assertString(payload.orderId, 'orderId');
+  assertInteger(payload.amountCents, 'amountCents');
+  assertString(payload.originStorefront, 'originStorefront');
+  assertAllowedStorefront(config, payload.originStorefront);
+
+  const embedOrigin = normalizeOrigin(payload.embedOrigin);
+  if (!embedOrigin || !isAllowedEmbedOrigin(config.bridge.allowedEmbedOrigins, embedOrigin)) {
+    throw new Error(`embedOrigin is not approved: ${payload.embedOrigin}`);
+  }
+
+  const currency = String(payload.currency || config.authnet.defaultCurrency).toUpperCase();
+  if (!/^[A-Z]{3}$/.test(currency)) throw new Error('Missing or invalid currency');
+
+  const token = generatePaymentSessionToken();
+  const tokenHash = hashPaymentSessionToken(token);
+  const expiresAt = new Date(Date.now() + config.bridge.paymentSessionTtlSeconds * 1000).toISOString();
+
+  await createPaymentSession(supabase, {
+    token_hash: tokenHash,
+    order_id: payload.orderId,
+    amount_cents: payload.amountCents,
+    currency,
+    origin_storefront: String(payload.originStorefront).trim().toLowerCase(),
+    parent_origin: embedOrigin,
+    expires_at: expiresAt,
+  });
+
+  return {
+    statusCode: 200,
+    body: {
+      ok: true,
+      sessionToken: token,
+      sessionId: paymentSessionIdFromToken(token),
+      expiresAt,
+      embedUrl: `/api/payments/embed?session=${token}`,
+    },
+    replayed: false,
+  };
+}
+
+// Validates and spends the short-lived payment session bound to this charge.
+// The session proves the charge amount/order/storefront match what the Vanta
+// Labs backend signed for the browser tokenization step.
+async function consumeChargePaymentSession(supabase, payload) {
+  assertString(payload.paymentSession, 'paymentSession');
+  assertPaymentSessionTokenShape(payload.paymentSession);
+
+  const tokenHash = hashPaymentSessionToken(payload.paymentSession);
+  const record = await findPaymentSessionByTokenHash(supabase, tokenHash);
+  assertSessionMatchesCharge(record, payload);
+
+  const consumed = await consumePaymentSession(supabase, tokenHash);
+  if (!consumed) {
+    const err = new Error('Payment session has already been used');
+    err.statusCode = 409;
+    throw err;
+  }
+
+  return record;
+}
+
 async function handleCharge(req, rawBody, payload) {
   const { config, supabase, signed } = await authenticateBridgeRequest(req, rawBody);
 
@@ -137,8 +224,16 @@ async function handleCharge(req, rawBody, payload) {
   assertNoSensitiveCardFields(payload);
   assertChargeLineItems(payload);
 
+  if (config.bridge.requirePaymentSession && payload.paymentSession === undefined) {
+    throw new Error('Missing required paymentSession');
+  }
+
   const endpoint = '/api/payments/charge';
   return withIdempotency(supabase, endpoint, req.headers['x-idempotency-key'], signed.requestHash, async () => {
+    if (payload.paymentSession !== undefined) {
+      await consumeChargePaymentSession(supabase, payload);
+    }
+
     const result = await chargeOpaqueData(config, payload);
     const paymentStatus = result.ok ? 'captured' : 'declined';
 
@@ -503,9 +598,11 @@ async function retryPendingSyncDeliveries(authTokenFromRequest) {
 module.exports = {
   assertChargeLineItems,
   assertNoSensitiveCardFields,
+  consumeChargePaymentSession,
   mapWebhookEventToOrderStatus,
   redactPaymentPayload,
   handleCharge,
+  handleCreatePaymentSession,
   handleRefund,
   retryPendingSyncDeliveries,
   handleVoid,

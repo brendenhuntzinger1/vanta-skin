@@ -50,6 +50,22 @@ test('redactPaymentPayload drops opaqueData.dataValue and keeps the rest', () =>
   assert.equal(payload.opaqueData.dataValue, 'secret-token');
 });
 
+// The payment session token is a bearer credential: it is redacted from
+// payment_events.request_payload alongside the Accept.js nonce.
+test('redactPaymentPayload drops paymentSession bearer tokens', () => {
+  const payload = {
+    orderId: 'o',
+    paymentSession: 'vps_' + 'a'.repeat(64),
+    opaqueData: { dataDescriptor: 'COMMON.ACCEPT.INAPP.PAYMENT', dataValue: 'secret-token' },
+  };
+  const redacted = redactPaymentPayload(payload);
+  assert.equal(redacted.paymentSession, '[redacted]');
+  assert.equal(redacted.opaqueData.dataValue, '[redacted]');
+  assert.equal(redacted.orderId, 'o');
+  assert.equal(JSON.stringify(redacted).includes('vps_'), false);
+  assert.equal(payload.paymentSession.startsWith('vps_'), true);
+});
+
 test('mapWebhookEventToOrderStatus maps known event types', () => {
   assert.equal(mapWebhookEventToOrderStatus('net.authorize.payment.authcapture.created'), 'paid');
   assert.equal(mapWebhookEventToOrderStatus('net.authorize.payment.refund.created'), 'refunded');

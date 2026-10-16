@@ -1,3 +1,5 @@
+const { normalizeOrigin } = require('./payment-session');
+
 function required(name) {
   const value = process.env[name];
   if (!value) throw new Error(`Missing required environment variable: ${name}`);
@@ -37,6 +39,19 @@ function optionalNumber(name, fallback) {
   const parsed = Number(value);
   if (!Number.isFinite(parsed)) return fallback;
   return parsed;
+}
+
+// Exact https origins allowed to iframe the hosted payment component
+// (Vanta Labs checkout pages). Invalid entries fail loudly at load time
+// instead of silently narrowing the allowlist.
+function loadAllowedEmbedOrigins() {
+  return optional('VANTA_EMBED_ALLOWED_ORIGINS', 'https://vantalabsresearch.com')
+    .split(',')
+    .map((value) => {
+      const origin = normalizeOrigin(value);
+      if (!origin) throw new Error(`Invalid origin in VANTA_EMBED_ALLOWED_ORIGINS: ${value.trim()}`);
+      return origin;
+    });
 }
 
 // Callback settings, read without requiring the rest of the payment config so
@@ -79,6 +94,9 @@ function loadConfig() {
         .split(',')
         .map((value) => value.trim().toLowerCase())
         .filter(Boolean),
+      allowedEmbedOrigins: loadAllowedEmbedOrigins(),
+      paymentSessionTtlSeconds: optionalNumber('VANTA_PAYMENT_SESSION_TTL_SECONDS', 900),
+      requirePaymentSession: envBool('VANTA_REQUIRE_PAYMENT_SESSION', false),
     },
     supabase: {
       url: required('SUPABASE_URL'),

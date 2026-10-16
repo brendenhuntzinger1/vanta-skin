@@ -26,6 +26,9 @@ This repository now includes server-to-server payment endpoints under `/api/paym
 - `POST /api/payments/void`
 - `POST /api/payments/webhook`
 - `POST /api/payments/sync-retry` (re-deliver pending status callbacks to Vanta Labs)
+- `POST /api/payments/session` (create a short-lived embedded-checkout payment session)
+- `POST /api/payments/session-validate` (browser-facing session check for the hosted component)
+- `GET /api/payments/embed?session=<token>` (hosted payment component iframed by the Vanta Labs checkout)
 
 Vanta Labs remains the system of record for orders, fulfillment, inventory, and customer communications. Vanta Skin stores payment/security/audit/sync records only.
 
@@ -63,6 +66,12 @@ Optional:
 - `VANTA_HMAC_MAX_SKEW_SECONDS` (default `300`)
 - `VANTA_ALLOWED_ORIGIN_STOREFRONTS` (comma-separated allowlist, default `vantalabsresearch.com`)
 
+#### Embedded payment component
+
+- `VANTA_EMBED_ALLOWED_ORIGINS` (comma-separated exact https origins allowed to iframe the hosted component, default `https://vantalabsresearch.com`)
+- `VANTA_PAYMENT_SESSION_TTL_SECONDS` (default `900`)
+- `VANTA_REQUIRE_PAYMENT_SESSION` (default `false`; set `true` so every charge must carry a live single-use session token)
+
 #### Supabase
 
 - `SUPABASE_URL`
@@ -91,8 +100,9 @@ Migration files:
 - `supabase/migrations/20261016000000_payment_bridge.sql`
 - `supabase/migrations/20261016001000_payment_webhook_reconciliation.sql`
 - `supabase/migrations/20261016002000_payment_sync_outbox.sql`
+- `supabase/migrations/20261016003000_payment_sessions.sql`
 
-These create durable idempotency/replay/webhook/payment audit tables plus an outbound sync outbox for reliable callbacks to Vanta Labs.
+These create durable idempotency/replay/webhook/payment audit tables, an outbound sync outbox for reliable callbacks to Vanta Labs, and the single-use embedded-checkout payment session ledger.
 
 ### Vanta Labs integration handoff
 
@@ -103,6 +113,18 @@ See `/home/runner/work/vanta-skin/vanta-skin/VANTA_LABS_HANDOFF.md` for the Stag
 - Checkout now loads `assets/js/payments.js`.
 - If `window.STORE.authnet.enabled` and `window.STORE.paymentsEnabled` are true, the checkout form tokenizes card data with Authorize.net Accept.js and attaches `opaqueData` to the order object.
 - Implement `window.VANTA_PAY(order)` to send order + tokenized payload to your backend flow.
+
+### Embedded payment component (Vanta Labs checkout)
+
+For cross-storefront checkout, Vanta Skin hosts the card form at
+`GET /api/payments/embed?session=<token>` and the Vanta Labs checkout iframes
+it. Raw card data stays inside the iframe and is tokenized there by
+Accept.js; Labs only receives the `opaqueData` token via strictly validated
+`postMessage` (exact-origin checks, per-session ids, targeted origins).
+Embedding is restricted by CSP `frame-ancestors` to
+`VANTA_EMBED_ALLOWED_ORIGINS`. `assets/js/payment-embed-parent.js` is the
+reference parent-side implementation for the Labs codebase. The full contract
+and the Accept.js-in-iframe evaluation are in `VANTA_LABS_HANDOFF.md`.
 
 ### Sandbox test checklist
 

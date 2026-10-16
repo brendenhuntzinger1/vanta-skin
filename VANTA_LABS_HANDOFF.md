@@ -23,6 +23,9 @@ All endpoints are `POST` and require bridge authentication headers.
 - `POST /api/payments/webhook` (Authorize.net only; not called by Vanta Labs)
 - `GET /api/payments/tokenize-config` (browser/client config fetch)
 - `POST /api/payments/sync-retry` (ops endpoint for replaying failed payment-status callbacks to Vanta Labs)
+- `POST /api/payments/session` (creates the short-lived embedded-component session)
+- `POST /api/payments/session-validate` (browser-facing; called only by the hosted component)
+- `GET /api/payments/embed?session=<token>` (hosted payment component HTML for the Labs checkout iframe)
 
 ## 3) Required Headers (Vanta Labs backend → Vanta Skin backend)
 
@@ -101,6 +104,7 @@ Validation notes:
 - `amountCents` is authoritative (computed by the storefront from its order and signed). `lineItems` are the real goods at their own prices (positive integer `quantity`, non-negative integer `unitPriceCents`) and need not sum to `amountCents`: coupons, free items and credits are why.
 - Optional `shippingCents` and `taxCents` are validated as non-negative integers. The Authorize.net transaction fields (invoice number, description, line items) are unchanged pending review of the written merchant approval.
 - Raw card fields (PAN/CVV/etc.) are rejected; only `opaqueData` is accepted.
+- Optional `paymentSession`: the raw session token from `POST /api/payments/session`. When present it is validated (exact order/amount/storefront match, unexpired, unused) and consumed atomically before the charge runs. When `VANTA_REQUIRE_PAYMENT_SESSION=true`, charges without it are rejected.
 
 ### Success response (`200`)
 
@@ -316,6 +320,82 @@ Sync callback controls:
 - `VANTA_LABS_SYNC_SHARED_SECRET`
 - `VANTA_LABS_PROTECTION_BYPASS` (Labs project's Vercel automation-bypass secret; previews only)
 - `VANTA_SYNC_RETRY_TOKEN`
+
+Embedded component controls:
+- `VANTA_EMBED_ALLOWED_ORIGINS` (comma-separated exact https origins allowed to iframe the hosted component, default `https://vantalabsresearch.com`; add Labs preview origins explicitly)
+- `VANTA_PAYMENT_SESSION_TTL_SECONDS` (default `900`)
+- `VANTA_REQUIRE_PAYMENT_SESSION` (default `false`; set `true` after Labs has migrated so every charge must carry a live session token)
+
+## 14) Embedded payment component (hosted on Vanta Skin)
+
+The Vanta Labs checkout embeds a Vanta Skin-hosted payment component in an
+iframe. Raw card data is entered only inside that iframe and is tokenized
+there by Accept.js; the Vanta Labs page and backend only ever see the
+Authorize.net `opaqueData` token.
+
+### Accept.js iframe support (evaluated before implementation)
+
+Accept.js is supported in this configuration:
+
+- Accept.js executes in whatever window loads it. Inside the iframe it is
+  loaded from the Authorize.net CDN (`https://jstest.authorize.net/v1/Accept.js`
+  in sandbox) and `Accept.dispatchData()` posts directly to the Authorize.net
+  tokenization API over CORS-enabled HTTPS (`apitest.authorize.net`). Neither
+  call depends on the top-level page's origin, so cross-origin framing works.
+- The iframe document must be HTTPS (the Vanta Skin deployment is).
+- The component's CSP allows scripts only from the Authorize.net CDN plus the
+  hash-locked inline bootstrap, and connections only to the Vanta Skin origin
+  and the Authorize.net tokenization endpoints.
+- Only the public API login id and public client key reach the browser (they
+  are designed for client-side use). The transaction key and signature key
+  never leave the server.
+- If the Labs checkout adds a `sandbox` attribute to the iframe it must
+  include `allow-scripts allow-forms allow-same-origin`, or Accept.js cannot
+  run.
+- Accept.js sets no cookies, so third-party cookie blocking does not affect
+  tokenization.
+
+### Flow
+
+1. Labs backend (HMAC-signed) calls `POST /api/payments/session` with
+   `{ orderId, amountCents, currency, originStorefront, embedOrigin }`.
+   `embedOrigin` is the exact https origin of the Labs checkout page and must
+   be in `VANTA_EMBED_ALLOWED_ORIGINS`.
+2. Response: `{ ok, sessionToken, sessionId, expiresAt, embedUrl }`. The raw
+   token is returned once; only its SHA-256 hash is stored. Sessions are
+   single-use and expire after `VANTA_PAYMENT_SESSION_TTL_SECONDS`.
+3. Labs checkout iframes `embedUrl`. Reference parent implementation:
+   `assets/js/payment-embed-parent.js` (copy/adapt into the Labs codebase).
+4. The iframe validates the session via `POST /api/payments/session-validate`
+   (browser-facing; token is the bearer credential) and renders the card form.
+5. On submit (in-iframe button, or a `vanta:pay:submit` message from the
+   parent), the iframe tokenizes the card with Accept.js and posts
+   `vanta:pay:tokenized` with `opaqueData` to the parent.
+6. Labs checkout sends `opaqueData` + `paymentSession` to its backend, which
+   calls `POST /api/payments/charge` as before (HMAC + idempotency). The
+   charge re-validates the session (exact order/amount/storefront match) and
+   consumes it atomically.
+
+### Cross-origin messaging contract
+
+- Messages parent → iframe and iframe → parent always use an explicit target
+  origin (the server-approved `embedOrigin`), never a wildcard.
+- Receivers check `event.origin` for an exact match before reading anything.
+- Every message carries `sessionId` (first 24 hex chars of the token's
+  SHA-256, computable by both sides); mismatched messages are dropped.
+- Message types: `vanta:pay:ready`, `vanta:pay:tokenized` (iframe → parent),
+  `vanta:pay:submit` (parent → iframe), `vanta:pay:error` (iframe → parent).
+- `opaqueData` is forwarded to the Labs backend immediately; it is never
+  logged or persisted in the browser.
+
+### Embedding restrictions
+
+- `GET /api/payments/embed` sends `Content-Security-Policy: frame-ancestors`
+  with exactly the `VANTA_EMBED_ALLOWED_ORIGINS` allowlist; no other site can
+  frame the component.
+- `X-Frame-Options` is deliberately not sent (it cannot express a cross-origin
+  allowlist; `frame-ancestors` supersedes it in modern browsers).
+- Responses are `cache-control: no-store` with `referrer-policy: no-referrer`.
 
 ## Health check (no money moves)
 
