@@ -39,9 +39,14 @@ create index if not exists payment_events_authnet_trans_idx on public.payment_ev
 create table if not exists public.authnet_webhook_events (
   event_id text primary key,
   event_type text not null,
+  transaction_id text,
+  reconciled_order_id text,
+  reconciled_status text,
   payload jsonb not null,
   received_at timestamptz not null default now()
 );
+
+create index if not exists authnet_webhook_events_transaction_idx on public.authnet_webhook_events (transaction_id);
 
 alter table public.payment_request_replays enable row level security;
 alter table public.payment_idempotency enable row level security;

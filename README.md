@@ -53,6 +53,7 @@ or:
 Optional:
 
 - `VANTA_HMAC_MAX_SKEW_SECONDS` (default `300`)
+- `VANTA_ALLOWED_ORIGIN_STOREFRONTS` (comma-separated allowlist, default `vantalabsresearch.com`)
 
 #### Supabase
 
@@ -79,6 +80,9 @@ Migration file:
 - `supabase/migrations/20261016000000_payment_bridge.sql`
 
 This creates durable idempotency/replay/webhook/payment audit tables and optional payment columns on `orders` if missing.
+If the first migration is already applied, also apply the webhook reconciliation follow-up migration:
+
+- `supabase/migrations/20261016001000_payment_webhook_reconciliation.sql`
 
 ### Vanta Labs integration handoff
 

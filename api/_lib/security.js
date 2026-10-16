@@ -70,8 +70,11 @@ function verifyWebhookSignature(signatureKey, payload, headerValue) {
   if (!signatureKey) return true;
   if (!headerValue) return false;
 
+  const normalizedKey = /^[A-Fa-f0-9]+$/.test(signatureKey) && signatureKey.length % 2 === 0
+    ? Buffer.from(signatureKey, 'hex')
+    : signatureKey;
   const incoming = String(headerValue).replace(/^sha512=/i, '').toLowerCase();
-  const expected = createHmac('sha512', signatureKey).update(payload, 'utf8').digest('hex');
+  const expected = createHmac('sha512', normalizedKey).update(payload, 'utf8').digest('hex');
   return safeEqualHex(expected, incoming);
 }
 

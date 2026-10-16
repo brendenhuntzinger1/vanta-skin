@@ -4,6 +4,13 @@ function moneyFromCents(value) {
   return (Number(value) / 100).toFixed(2);
 }
 
+function normalizeRefundCardReference(value) {
+  const raw = String(value || '').trim().replace(/\s+/g, '');
+  if (/^\d{4}$/.test(raw)) return `XXXX${raw}`;
+  if (/^X{4}\d{4}$/i.test(raw)) return raw.toUpperCase();
+  throw new Error('cardNumberMasked must be last 4 digits or XXXX#### format');
+}
+
 function merchantAuth(config) {
   const merchantAuthenticationType = new APIContracts.MerchantAuthenticationType();
   merchantAuthenticationType.setName(config.authnet.apiLoginId);
@@ -128,7 +135,7 @@ async function refundTransaction(config, payload) {
   transactionRequestType.setRefTransId(String(payload.transactionId));
 
   const card = new APIContracts.CreditCardType();
-  card.setCardNumber(String(payload.cardNumberMasked));
+  card.setCardNumber(normalizeRefundCardReference(payload.cardNumberMasked));
   card.setExpirationDate(String(payload.expirationDate || 'XXXX'));
 
   const payment = new APIContracts.PaymentType();
@@ -154,6 +161,7 @@ async function refundTransaction(config, payload) {
 
 module.exports = {
   chargeOpaqueData,
+  normalizeRefundCardReference,
   refundTransaction,
   voidTransaction,
 };

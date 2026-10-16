@@ -29,9 +29,16 @@ test('signHmac returns deterministic signature', () => {
 });
 
 test('verifyWebhookSignature validates expected hash', () => {
-  const key = 'AABBCC';
+  const key = 'AABBCC-key';
   const payload = '{"event":"sample"}';
   const signature = `sha512=${createHmac('sha512', key).update(payload, 'utf8').digest('hex')}`;
   assert.equal(verifyWebhookSignature(key, payload, signature), true);
   assert.equal(verifyWebhookSignature(key, payload, `${signature}bad`), false);
+});
+
+test('verifyWebhookSignature supports hex-encoded signature keys', () => {
+  const hexKey = 'A1B2C3D4';
+  const payload = '{"event":"hex"}';
+  const signature = `sha512=${createHmac('sha512', Buffer.from(hexKey, 'hex')).update(payload, 'utf8').digest('hex')}`;
+  assert.equal(verifyWebhookSignature(hexKey, payload, signature), true);
 });

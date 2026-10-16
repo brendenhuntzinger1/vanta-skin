@@ -2,6 +2,7 @@ const { loadConfig } = require('./config');
 const {
   assertOrderMatches,
   createSupabase,
+  findLatestPaymentEventByTransaction,
   findIdempotency,
   markOrderPayment,
   recordPaymentEvent,
@@ -10,7 +11,7 @@ const {
   saveIdempotency,
 } = require('./supabase');
 const { verifyRequestSignature, verifyWebhookSignature } = require('./security');
-const { chargeOpaqueData, refundTransaction, voidTransaction } = require('./authnet');
+const { chargeOpaqueData, normalizeRefundCardReference, refundTransaction, voidTransaction } = require('./authnet');
 
 function assertString(value, field) {
   if (!value || typeof value !== 'string') throw new Error(`Missing or invalid ${field}`);
@@ -18,6 +19,50 @@ function assertString(value, field) {
 
 function assertInteger(value, field) {
   if (!Number.isInteger(value) || value <= 0) throw new Error(`Missing or invalid ${field}`);
+}
+
+function assertAllowedStorefront(config, storefront) {
+  const normalized = String(storefront || '').trim().toLowerCase();
+  if (!config.bridge.allowedOriginStorefronts.includes(normalized)) {
+    throw new Error(`originStorefront is not approved: ${storefront}`);
+  }
+}
+
+function assertNoSensitiveCardFields(payload) {
+  const forbidden = ['cardNumber', 'cardCode', 'cvv', 'cvc', 'securityCode', 'pan'];
+  for (const key of forbidden) {
+    if (payload[key] !== undefined) {
+      throw new Error(`Sensitive field ${key} is not allowed. Use Authorize.net opaqueData tokenization.`);
+    }
+  }
+}
+
+function assertChargeLineItemsAmount(payload) {
+  if (!Array.isArray(payload.lineItems) || payload.lineItems.length === 0) return;
+  const sum = payload.lineItems.reduce((acc, item) => {
+    const qty = Number(item?.quantity || 0);
+    const unit = Number(item?.unitPriceCents || 0);
+    return acc + Math.round(qty * unit);
+  }, 0);
+
+  if (sum !== Number(payload.amountCents)) {
+    throw new Error(`lineItems amount total (${sum}) does not match amountCents (${payload.amountCents})`);
+  }
+}
+
+function mapWebhookEventToOrderStatus(eventType) {
+  const map = {
+    'net.authorize.payment.authcapture.created': 'paid',
+    'net.authorize.payment.capture.created': 'paid',
+    'net.authorize.payment.authorization.created': 'authorized',
+    'net.authorize.payment.refund.created': 'refunded',
+    'net.authorize.payment.void.created': 'voided',
+  };
+  return map[String(eventType || '').toLowerCase()] || null;
+}
+
+function extractWebhookTransactionId(payload) {
+  return payload?.payload?.id || payload?.payload?.transId || null;
 }
 
 async function authenticateBridgeRequest(req, rawBody) {
@@ -68,6 +113,9 @@ async function handleCharge(req, rawBody, payload) {
   assertString(payload.originStorefront, 'originStorefront');
   assertString(payload.opaqueData?.dataDescriptor, 'opaqueData.dataDescriptor');
   assertString(payload.opaqueData?.dataValue, 'opaqueData.dataValue');
+  assertAllowedStorefront(config, payload.originStorefront);
+  assertNoSensitiveCardFields(payload);
+  assertChargeLineItemsAmount(payload);
 
   const endpoint = '/api/payments/charge';
   return withIdempotency(supabase, endpoint, req.headers['x-idempotency-key'], signed.requestHash, async () => {
@@ -119,6 +167,7 @@ async function handleVoid(req, rawBody, payload) {
   assertString(payload.orderId, 'orderId');
   assertString(payload.originStorefront, 'originStorefront');
   assertString(payload.transactionId, 'transactionId');
+  assertAllowedStorefront(config, payload.originStorefront);
 
   const endpoint = '/api/payments/void';
   return withIdempotency(supabase, endpoint, req.headers['x-idempotency-key'], signed.requestHash, async () => {
@@ -166,6 +215,8 @@ async function handleRefund(req, rawBody, payload) {
   assertString(payload.transactionId, 'transactionId');
   assertInteger(payload.amountCents, 'amountCents');
   assertString(payload.cardNumberMasked, 'cardNumberMasked');
+  assertAllowedStorefront(config, payload.originStorefront);
+  normalizeRefundCardReference(payload.cardNumberMasked);
 
   const endpoint = '/api/payments/refund';
   return withIdempotency(supabase, endpoint, req.headers['x-idempotency-key'], signed.requestHash, async () => {
@@ -217,11 +268,26 @@ async function handleWebhook(rawBody, signatureHeader) {
 
   const payload = JSON.parse(rawBody || '{}');
   const eventId = payload?.notificationId || payload?.id;
+  const eventType = String(payload?.eventType || 'unknown');
+  const transactionId = extractWebhookTransactionId(payload);
+  const reconciledStatus = mapWebhookEventToOrderStatus(eventType);
+  let reconciledOrderId = null;
+
+  if (transactionId && reconciledStatus) {
+    const paymentEvent = await findLatestPaymentEventByTransaction(supabase, transactionId);
+    if (paymentEvent?.order_id) {
+      reconciledOrderId = paymentEvent.order_id;
+      await markOrderPayment(supabase, config, paymentEvent.order_id, reconciledStatus, transactionId);
+    }
+  }
 
   await recordWebhookEvent(supabase, {
     event_id: String(eventId || `unknown-${Date.now()}`),
-    event_type: payload?.eventType || 'unknown',
+    event_type: eventType,
     payload,
+    transaction_id: transactionId,
+    reconciled_order_id: reconciledOrderId,
+    reconciled_status: reconciledStatus,
     received_at: new Date().toISOString(),
   });
 
@@ -230,11 +296,17 @@ async function handleWebhook(rawBody, signatureHeader) {
     body: {
       ok: true,
       message: 'Webhook accepted',
+      reconciled: !!reconciledOrderId,
+      reconciledOrderId,
+      reconciledStatus,
     },
   };
 }
 
 module.exports = {
+  assertChargeLineItemsAmount,
+  assertNoSensitiveCardFields,
+  mapWebhookEventToOrderStatus,
   handleCharge,
   handleRefund,
   handleVoid,

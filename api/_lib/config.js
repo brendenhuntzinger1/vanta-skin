@@ -51,6 +51,12 @@ function loadConfig() {
       maxSkewSeconds: Number(optional('VANTA_HMAC_MAX_SKEW_SECONDS', '300')),
       secrets: hmacSecrets,
     },
+    bridge: {
+      allowedOriginStorefronts: optional('VANTA_ALLOWED_ORIGIN_STOREFRONTS', 'vantalabsresearch.com')
+        .split(',')
+        .map((value) => value.trim().toLowerCase())
+        .filter(Boolean),
+    },
     supabase: {
       url: required('SUPABASE_URL'),
       serviceRoleKey: required('SUPABASE_SERVICE_ROLE_KEY'),

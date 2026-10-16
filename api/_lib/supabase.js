@@ -108,9 +108,24 @@ async function recordWebhookEvent(supabase, webhookEvent) {
   if (error) throw new Error(`Unable to store webhook event: ${error.message}`);
 }
 
+async function findLatestPaymentEventByTransaction(supabase, transactionId) {
+  if (!transactionId) return null;
+  const { data, error } = await supabase
+    .from('payment_events')
+    .select('order_id, status')
+    .eq('authnet_transaction_id', String(transactionId))
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (error) throw new Error(`Unable to lookup payment event by transaction ${transactionId}: ${error.message}`);
+  return data || null;
+}
+
 module.exports = {
   assertOrderMatches,
   createSupabase,
+  findLatestPaymentEventByTransaction,
   findIdempotency,
   markOrderPayment,
   recordPaymentEvent,

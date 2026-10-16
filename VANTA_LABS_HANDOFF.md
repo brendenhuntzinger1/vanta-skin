@@ -29,6 +29,7 @@ All endpoints are `POST` and require bridge authentication headers.
 ### Replay and idempotency rules
 
 - Reusing the same `(x-vanta-key-id, x-vanta-nonce)` is rejected (`409`).
+- For retries, generate a **new nonce** each attempt but reuse the same idempotency key for the same operation intent.
 - Idempotency key is required for `charge/refund/void`.
 - If same idempotency key is reused with a different payload hash, request is rejected (`409`).
 - If same idempotency key and same payload hash are reused, cached response is returned with `replayed: true`.
@@ -88,6 +89,11 @@ Time skew window:
 }
 ```
 
+Validation notes:
+- `originStorefront` must be in the Vanta Skin allowlist (`VANTA_ALLOWED_ORIGIN_STOREFRONTS`).
+- If `lineItems` are present, summed `quantity * unitPriceCents` must equal `amountCents`.
+- Raw card fields (PAN/CVV/etc.) are rejected; only `opaqueData` is accepted.
+
 ### Success response (`200`)
 
 ```json
@@ -142,7 +148,9 @@ Time skew window:
 }
 ```
 
-`cardNumberMasked` should be the required refund card reference accepted by Authorize.net for prior transactions.
+`cardNumberMasked` must be either:
+- last 4 digits (example: `1111`), or
+- `XXXX####` format (example: `XXXX1111`)
 
 ### Response
 
@@ -193,6 +201,7 @@ Never send raw PAN/CVV to Vanta Labs backend or Vanta Skin backend.
 - `payment_idempotency`: request hash + stored response
 - `payment_events`: transaction audit trail (includes origin storefront + payloads)
 - `authnet_webhook_events`: webhook event ledger
+  - includes `transaction_id`, `reconciled_order_id`, and `reconciled_status` for reconciliation traceability
 
 ### For Vanta Labs side
 
@@ -224,3 +233,22 @@ On successful charge, update Labs order state to paid and continue existing fulf
 - Do not falsify product descriptions, storefront source, or order metadata.
 - Preserve `originStorefront` and line-item visibility for processor/audit requirements.
 - Do not switch to live processing until written approval and production sign-off.
+
+## 12) Environment Variables (Vanta Skin)
+
+Required:
+- `AUTHNET_API_LOGIN_ID`
+- `AUTHNET_TRANSACTION_KEY`
+- `AUTHNET_CLIENT_KEY`
+- `SUPABASE_URL`
+- `SUPABASE_SERVICE_ROLE_KEY`
+- One of:
+  - `VANTA_HMAC_KEY_ID` + `VANTA_HMAC_SHARED_SECRET`
+  - `VANTA_HMAC_KEYS_JSON`
+
+Recommended:
+- `AUTHNET_SIGNATURE_KEY` (for webhook signature verification)
+
+Sandbox / policy controls:
+- `AUTHNET_SANDBOX=true`
+- `VANTA_ALLOWED_ORIGIN_STOREFRONTS=vantalabsresearch.com`
