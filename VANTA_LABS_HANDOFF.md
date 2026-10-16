@@ -196,7 +196,7 @@ Response `200`:
 ```
 
 1. Skin's own records first (the idempotency row, then the charge audit row) → `source: "skin_record"`.
-2. Otherwise Authorize.Net: the unsettled list, then batches settled in the last 2 days, for a transaction with the same `invoiceNumber` and amount, submitted at/after `attemptStartedAt` (60 s clock tolerance), not in `knownTransactionIds`; details are fetched for the card. → `source: "gateway_lookup"`. Several matches: captured wins over held, declined, rejected.
+2. Otherwise Authorize.Net: the unsettled list, then batches settled in the last 2 days, for a transaction whose invoice is Skin's own (`VS-…`, derived from `orderId`) or the `invoiceNumber` Labs sent (a legacy number recorded before the change), with the same amount, submitted at/after `attemptStartedAt` (60 s clock tolerance), not in `knownTransactionIds`; details are fetched for the card. → `source: "gateway_lookup"`. Several matches: captured wins over held, declined, rejected.
 3. `not_found` only when the lookups completed without error and the attempt is ≥ 30 minutes old (measured from the later of `attemptStartedAt` and Skin's claim). Otherwise `pending`.
 
 Gateway statuses: `capturedPendingSettlement`/`settledSuccessfully` → captured; `declined`/`failedReview` → declined; `generalError`/`communicationError`/`expired`/`voided` → rejected; review and unknown statuses → held.

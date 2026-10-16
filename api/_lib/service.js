@@ -963,12 +963,15 @@ async function reconcileAttempt({ config, store, gateway, now }, payload) {
   }
 
   // 2. The gateway: unsettled first, then batches settled in the last 2 days.
-  const invoiceNumber = payload.invoiceNumber || invoiceNumberFor({ orderId });
+  // Charges go out under Skin's own invoice (derived from orderId). A number
+  // Labs recorded earlier (legacy order number) is matched too, never instead.
+  const invoiceNumbers = new Set([invoiceNumberFor({ orderId })]);
+  if (payload.invoiceNumber) invoiceNumbers.add(payload.invoiceNumber);
   const startedMs = Date.parse(payload.attemptStartedAt);
   const known = new Set((payload.knownTransactionIds || []).map(String));
   const matches = (tx) => {
     if (!tx) return false;
-    if (String(tx.invoiceNumber || '') !== invoiceNumber) return false;
+    if (!invoiceNumbers.has(String(tx.invoiceNumber || ''))) return false;
     if (centsFromMoney(tx.settleAmount ?? tx.authAmount) !== amountCents) return false;
     const submitted = Date.parse(tx.submitTimeUTC || tx.submitTimeLocal || '');
     if (!Number.isFinite(submitted) || submitted < startedMs - RECONCILE_CLOCK_TOLERANCE_MS) return false;
