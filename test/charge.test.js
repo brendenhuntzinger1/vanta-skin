@@ -39,7 +39,7 @@ test('captured → 200 with the contract body', async () => {
   const res = await charge(ctx);
   assert.equal(res.statusCode, 200);
   assert.deepEqual(Object.keys(res.body).sort(), [
-    'action', 'amountCents', 'authCode', 'cardLast4', 'cardType', 'currency', 'customerMessage', 'gatewayContacted', 'invoiceNumber',
+    'action', 'amountCents', 'authCode', 'cardLast4', 'cardType', 'currency', 'customerMessage', 'declineCategory', 'gatewayContacted', 'invoiceNumber',
     'message', 'ok', 'orderId', 'outcome', 'paymentStatus', 'processorCode', 'refId', 'retryable', 'sandbox', 'transactionId',
   ].sort());
   assert.equal(res.body.ok, true);
@@ -465,4 +465,36 @@ test('Labs answering 500 leaves the callback failed with a backoff', async () =>
   assert.equal(row.delivery_status, 'failed');
   assert.equal(row.delivery_attempt_count, 1);
   assert.equal(row.next_attempt_at, '2026-10-16T12:01:00.000Z');
+});
+
+// ---------------------------------------------------------------------------
+// Decline categories: what the customer can fix, from the reason code
+// ---------------------------------------------------------------------------
+
+for (const [errorCode, outcome, category] of [
+  ['8', 'rejected', 'expiry'],
+  ['317', 'rejected', 'expiry'],
+  ['6', 'rejected', 'card_number'],
+  ['78', 'rejected', 'cvv'],
+  ['44', 'declined', 'cvv'],
+  ['27', 'declined', 'billing'],
+  ['45', 'declined', 'billing_and_cvv'],
+  ['11', 'rejected', 'duplicate'],
+  ['2', 'declined', 'generic'],
+  ['254', 'declined', 'generic'], // a fraud-filter decline is never named as such
+  [null, 'declined', 'generic'],
+]) {
+  test(`reason code ${errorCode} (${outcome}) → declineCategory ${category}`, async () => {
+    const ctx = setup({ gw: async () => gatewayResult(outcome, { errorCode }) });
+    const res = await charge(ctx);
+    assert.equal(res.body.outcome, outcome);
+    assert.equal(res.body.declineCategory, category);
+  });
+}
+
+test('captured, held and uncertain answers carry no decline category', async () => {
+  for (const outcome of ['captured', 'held']) {
+    const res = await charge(setup({ outcome }));
+    assert.equal(res.body.declineCategory, null, outcome);
+  }
 });

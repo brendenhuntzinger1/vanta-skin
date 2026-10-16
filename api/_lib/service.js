@@ -458,6 +458,25 @@ function chargeRetryable(outcome, gw) {
   return false;
 }
 
+// Why a card was refused, in categories the customer can act on. Keyed on the
+// Authorize.Net response reason code (developer.authorize.net response-code
+// list). Anything not listed — generic bank declines (2, 3, 4), fraud-filter
+// declines (250, 251, 254) — is 'generic': the customer is never told a
+// fraud filter fired, and "insufficient funds" is not distinguishable here.
+const DECLINE_CATEGORY_BY_REASON = Object.freeze({
+  6: 'card_number', 37: 'card_number', 315: 'card_number',
+  7: 'expiry', 8: 'expiry', 316: 'expiry', 317: 'expiry',
+  44: 'cvv', 65: 'cvv', 78: 'cvv',
+  27: 'billing', 127: 'billing',
+  45: 'billing_and_cvv',
+  11: 'duplicate',
+});
+
+function declineCategoryFor(outcome, gw) {
+  if (outcome !== 'declined' && outcome !== 'rejected') return null;
+  return DECLINE_CATEGORY_BY_REASON[Number(gw?.errorCode)] || 'generic';
+}
+
 function buildChargeBody({ config, payload, outcome, gw, refId, invoiceNumber }) {
   return {
     ok: outcome === 'captured',
@@ -479,6 +498,7 @@ function buildChargeBody({ config, payload, outcome, gw, refId, invoiceNumber })
     processorCode: gw?.processorCode || null,
     message: gw?.message || null,
     customerMessage: CUSTOMER_MESSAGES[outcome] ?? null,
+    declineCategory: declineCategoryFor(outcome, gw),
   };
 }
 
@@ -890,7 +910,13 @@ function outcomeForTransactionStatus(status) {
   return TRANSACTION_STATUS_OUTCOME[status] || 'held';
 }
 
+const RECONCILE_OPERATIONS = new Set(['charge', 'refund', 'void']);
+
 function validateReconcilePayload(payload) {
+  if (payload.operation !== undefined && !RECONCILE_OPERATIONS.has(payload.operation)) throw invalid('Invalid operation');
+  if (payload.operation === 'refund' || payload.operation === 'void') {
+    assertString(payload.originalTransactionId, 'originalTransactionId', 64);
+  }
   assertString(payload.orderId, 'orderId');
   assertString(payload.idempotencyKey, 'idempotencyKey');
   assertInteger(payload.amountCents, 'amountCents');
@@ -995,6 +1021,104 @@ async function reconcileAttempt({ config, store, gateway, now }, payload) {
   return { outcome, transactionId: null, cardLast4: null, cardType: null, amountCents: null, source: 'gateway_lookup' };
 }
 
+// Refund and void reconciliation. A refund is its own transaction; it is
+// matched only when the gateway's details name THIS order's charge as its
+// refTransId. A void changes the charge itself, so the charge's status answers.
+// As for charges: nothing found means not_found only once the lookups worked
+// and enough time has passed; otherwise pending. A lookup never moves money.
+const REFUND_TRANSACTION_STATUSES = new Set(['refundPendingSettlement', 'refundSettledSuccessfully']);
+const SETTLED_CHARGE_STATUSES = new Set(['settledSuccessfully', 'refundSettledSuccessfully', 'refundPendingSettlement']);
+const MAX_REFUND_DETAIL_LOOKUPS = 10;
+
+async function reconcileReversal({ config, store, gateway, now }, payload) {
+  const { operation, orderId, idempotencyKey, amountCents } = payload;
+  const original = String(payload.originalTransactionId);
+  const endpoint = operation === 'refund' ? REFUND_ENDPOINT : VOID_ENDPOINT;
+  const answer = (outcome, extra = {}) => ({
+    operation,
+    outcome,
+    transactionId: null,
+    originalTransactionId: original,
+    amountCents: null,
+    source: 'gateway_lookup',
+    ...extra,
+  });
+
+  // 1. This service's own records.
+  const row = await store.findIdempotency(endpoint, idempotencyKey);
+  const body = row?.response_body;
+  if (row?.status === 'completed' && body && GATEWAY_OUTCOMES.has(body.outcome)
+      && (!body.orderId || body.orderId === orderId) && String(body.originalTransactionId || '') === original) {
+    return answer(body.outcome, { transactionId: body.transactionId || null, amountCents: Number.isInteger(body.amountCents) ? body.amountCents : null, source: 'skin_record' });
+  }
+  const event = await store.findPaymentEventByIdempotencyKey(operation, idempotencyKey);
+  if (event && event.order_id === orderId && GATEWAY_OUTCOMES.has(event.outcome) && String(event.original_transaction_id || '') === original) {
+    return answer(event.outcome, { transactionId: event.authnet_transaction_id || null, amountCents: Number.isInteger(event.amount_cents) ? event.amount_cents : null, source: 'skin_record' });
+  }
+
+  const startedMs = Date.parse(payload.attemptStartedAt);
+  const rowCreatedMs = Date.parse(row?.created_at || '');
+  const referenceMs = Number.isFinite(rowCreatedMs) ? Math.max(startedMs, rowCreatedMs) : startedMs;
+  const oldEnough = now.getTime() - referenceMs >= NOT_FOUND_AFTER_MS;
+
+  // 2a. Void: the charge's own status.
+  if (operation === 'void') {
+    let details;
+    try {
+      details = await gateway.getTransactionDetails(config, original);
+    } catch {
+      return answer('pending');
+    }
+    const status = details?.transactionStatus || null;
+    if (status === 'voided') return answer('captured', { transactionId: original, amountCents });
+    // A settled charge cannot be voided: the void certainly did not happen.
+    if (SETTLED_CHARGE_STATUSES.has(status)) return answer('rejected');
+    if (status && oldEnough) return answer('not_found');
+    return answer('pending');
+  }
+
+  // 2b. Refund: refund transactions of this amount since the attempt began,
+  //     confirmed against this charge through their details.
+  const known = new Set((payload.knownTransactionIds || []).map(String));
+  const isCandidate = (tx) => {
+    if (!tx || !REFUND_TRANSACTION_STATUSES.has(tx.transactionStatus)) return false;
+    if (centsFromMoney(tx.settleAmount ?? tx.authAmount) !== amountCents) return false;
+    const submitted = Date.parse(tx.submitTimeUTC || tx.submitTimeLocal || '');
+    if (!Number.isFinite(submitted) || submitted < startedMs - RECONCILE_CLOCK_TOLERANCE_MS) return false;
+    return !known.has(String(tx.transId));
+  };
+  let lookupFailed = false;
+  let candidates = [];
+  try {
+    candidates.push(...(await gateway.getUnsettledTransactionList(config)).filter(isCandidate));
+  } catch {
+    lookupFailed = true;
+  }
+  try {
+    candidates.push(...(await gateway.getRecentSettledTransactions(config, { now, days: 2 })).filter(isCandidate));
+  } catch {
+    lookupFailed = true;
+  }
+  const seen = new Set();
+  candidates = candidates.filter((tx) => !seen.has(String(tx.transId)) && seen.add(String(tx.transId)));
+
+  for (const tx of candidates.slice(0, MAX_REFUND_DETAIL_LOOKUPS)) {
+    let details;
+    try {
+      details = await gateway.getTransactionDetails(config, tx.transId);
+    } catch {
+      lookupFailed = true;
+      continue;
+    }
+    if (String(details?.refTransId || '') !== original) continue;
+    if (details?.transactionType && details.transactionType !== 'refundTransaction') continue;
+    return answer('captured', { transactionId: String(tx.transId), amountCents: centsFromMoney(details?.settleAmount ?? tx.settleAmount) ?? amountCents });
+  }
+  if (candidates.length > MAX_REFUND_DETAIL_LOOKUPS) lookupFailed = true;
+
+  return answer(!lookupFailed && oldEnough ? 'not_found' : 'pending');
+}
+
 async function handleReconcile(req, rawBody, deps) {
   const d = resolveDeps(deps);
   const { config, store } = await authenticate(req, rawBody, d);
@@ -1004,7 +1128,10 @@ async function handleReconcile(req, rawBody, deps) {
 
   let result;
   try {
-    result = await reconcileAttempt({ config, store, gateway: d.gateway, now: d.now() }, payload);
+    const ctx = { config, store, gateway: d.gateway, now: d.now() };
+    result = payload.operation === 'refund' || payload.operation === 'void'
+      ? await reconcileReversal(ctx, payload)
+      : await reconcileAttempt(ctx, payload);
   } catch (error) {
     d.log('reconcile_error', { message: error?.message });
     throw unavailable('Payment records are temporarily unavailable');
@@ -1077,7 +1204,9 @@ module.exports = {
   handleWebhook,
   mapWebhookEventToOrderStatus,
   outcomeForTransactionStatus,
+  declineCategoryFor,
   reconcileAttempt,
+  reconcileReversal,
   redactPaymentPayload,
   retryPendingSyncDeliveries,
   toErrorResponse,

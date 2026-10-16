@@ -158,6 +158,12 @@ function createFakeStore() {
       const rows = db.paymentEvents.filter((e) => String(e.authnet_transaction_id) === String(transactionId) && (!actions || actions.includes(e.action)));
       return rows.length ? { ...rows[rows.length - 1] } : null;
     },
+    async findPaymentEventByIdempotencyKey(action, key) {
+      log.push('findPaymentEventByIdempotencyKey');
+      maybeFail('findPaymentEventByIdempotencyKey');
+      const rows = db.paymentEvents.filter((e) => e.action === action && e.idempotency_key === key);
+      return rows.length ? { ...rows[rows.length - 1] } : null;
+    },
     async findChargeEventByIdempotencyKey(key) {
       log.push('findChargeEventByIdempotencyKey');
       maybeFail('findChargeEventByIdempotencyKey');

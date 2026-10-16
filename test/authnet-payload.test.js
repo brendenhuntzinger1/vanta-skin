@@ -160,3 +160,13 @@ test('void request: exact field inventory', () => {
   assert.equal(request.refId, 'v'.repeat(20));
   assert.deepEqual(request.transactionRequest, { transactionType: 'voidTransaction', refTransId: '60212345678' });
 });
+
+// Issuer authentication (3-D Secure). Accept.js has no 3-D Secure, and the
+// API's cardholderAuthentication element is deprecated by Authorize.Net and
+// usable only with a separate third-party authentication provider, which this
+// account does not have. So no authentication values are invented or sent; a
+// bank that wants verification simply declines, and the customer is told so.
+test('the charge carries no cardholder-authentication (3-D Secure) values', () => {
+  const json = JSON.stringify(wire(buildChargeRequest(config, fullPayload(), { refId: 'r' })));
+  assert.doesNotMatch(json, /cardholderAuthentication|authenticationIndicator|cardholderAuthenticationValue/);
+});

@@ -202,6 +202,33 @@ Response `200`:
 Gateway statuses: `capturedPendingSettlement`/`settledSuccessfully` → captured; `declined`/`failedReview` → declined; `generalError`/`communicationError`/`expired`/`voided` → rejected; review and unknown statuses → held.
 The lookups need Authorize.Net's Transaction Details API enabled on the merchant account.
 
+### Refunds and voids
+
+The same endpoint with `"operation": "refund"` or `"void"` and the charge being
+reversed:
+
+```json
+{ "operation": "refund", "orderId": "…", "idempotencyKey": "vskin:refund:<orderId>:<n>",
+  "originalTransactionId": "<charge transId>", "amountCents": 1500,
+  "attemptStartedAt": "…", "knownTransactionIds": ["<earlier refund transIds>"] }
+```
+
+Response adds `operation` and `originalTransactionId`; `captured` means the
+refund/void happened.
+
+1. Skin's own records (refund/void idempotency row, then audit row), only when they name the same `originalTransactionId`.
+2. Refund: refund transactions (`refundPendingSettlement`, `refundSettledSuccessfully`) of the same amount since the attempt began, not in `knownTransactionIds`; each candidate's details must give `refTransId` = `originalTransactionId` (at most 10 detail lookups; more counts as a failed lookup).
+   Void: the original charge's details — `voided` → captured; settled → `rejected` (a settled charge cannot be voided); still capturable → `not_found` after 30 minutes, else `pending`.
+3. `not_found` / `pending` as for charges.
+
+### Decline categories
+
+A `declined`/`rejected` charge answer carries `declineCategory`, from the
+Authorize.Net reason code: `card_number` (6, 37, 315), `expiry` (7, 8, 316,
+317), `cvv` (44, 65, 78), `billing` (27, 127), `billing_and_cvv` (45),
+`duplicate` (11), otherwise `generic`. Labs turns it into the customer's
+sentence.
+
 ## 9) Skin → Labs callback (`VANTA_LABS_SYNC_ENDPOINT_URL`)
 
 Headers: the same HMAC scheme with the callback key, `x-idempotency-key` = `eventId`.

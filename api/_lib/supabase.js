@@ -121,6 +121,20 @@ function createStore(client) {
       return data || null;
     },
 
+    async findPaymentEventByIdempotencyKey(action, idempotencyKey) {
+      if (!idempotencyKey || !action) return null;
+      const { data, error } = await client
+        .from('payment_events')
+        .select(PAYMENT_EVENT_COLUMNS)
+        .eq('action', String(action))
+        .eq('idempotency_key', String(idempotencyKey))
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      if (error) throw new Error(`Unable to lookup payment event by idempotency key: ${error.message}`);
+      return data || null;
+    },
+
     async findChargeEventByIdempotencyKey(idempotencyKey) {
       if (!idempotencyKey) return null;
       const { data, error } = await client

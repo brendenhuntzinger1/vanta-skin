@@ -24,7 +24,7 @@ This repository includes server-to-server payment endpoints under `/api/payments
 - `POST /api/payments/charge`
 - `POST /api/payments/refund`
 - `POST /api/payments/void`
-- `POST /api/payments/reconcile` (read-only: what happened to a charge attempt; no money moves)
+- `POST /api/payments/reconcile` (read-only: what happened to a charge, refund or void attempt; no money moves)
 - `POST /api/payments/webhook` (Authorize.net only)
 - `POST /api/payments/sync-retry` (re-deliver due status callbacks to Vanta Labs; run from a cron)
 - `GET /api/payments/health` (signed readiness check)
@@ -39,7 +39,18 @@ configuration is down), `invalid` (400; 401 bad signature), `in_progress` /
 `conflict` (409), `uncertain` (502). `uncertain` means the gateway may have
 charged (timeout, network error, result not saved) and is never a decline;
 Labs reconciles it through `/api/payments/reconcile`. `customerMessage` is the
-only text meant for a shopper.
+only text meant for a shopper. A `declined` or `rejected` charge also carries
+`declineCategory` (`card_number`, `expiry`, `cvv`, `billing`,
+`billing_and_cvv`, `duplicate` or `generic`), from Authorize.net's reason code.
+
+`/api/payments/reconcile` takes `operation` (`charge` by default, `refund` or
+`void`). A refund is matched only when the gateway's transaction details name
+`originalTransactionId` as its `refTransId`; a void is answered by the original
+charge's status (`voided` → done; settled → it cannot have happened).
+
+3-D Secure is not supported: Accept.js has none, and the
+`cardholderAuthentication` API element is deprecated and needs a separate
+authentication provider. Nothing is sent for it.
 
 ### Security and reliability controls
 
