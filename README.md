@@ -110,7 +110,7 @@ See `/home/runner/work/vanta-skin/vanta-skin/VANTA_LABS_HANDOFF.md` for the Stag
 2. Use Authorize.net sandbox credentials and card test numbers.
 3. Confirm duplicate retry with same idempotency key returns cached result.
 4. Confirm duplicate nonce is rejected.
-5. Confirm line-item totals match `amountCents` when line items are sent.
+5. Confirm the Authorize.net transaction carries no line items and no customer email (only amount, token, invoice number and description).
 6. Confirm raw card fields are rejected (only `opaqueData` accepted).
 7. Confirm callbacks reach Vanta Labs and duplicate callbacks are deduplicated by `eventId`.
 8. Confirm failed callbacks are retried with `/api/payments/sync-retry`.

@@ -44,7 +44,11 @@ function mapCode(response) {
   return response?.transactionResponse?.responseCode || response?.messages?.resultCode || null;
 }
 
-async function chargeOpaqueData(config, payload) {
+// Authorize.Net is sent only what the charge needs (owner, 2026-10-16): the
+// amount, the Accept.js token, the order id as invoice number and a
+// description naming the originating storefront. No product lines and no
+// customer email, even when the storefront supplies them.
+function buildChargeRequest(config, payload) {
   const transactionRequestType = new APIContracts.TransactionRequestType();
   transactionRequestType.setTransactionType(payload.capture === false ? APIContracts.TransactionTypeEnum.AUTHONLYTRANSACTION : APIContracts.TransactionTypeEnum.AUTHCAPTURETRANSACTION);
   transactionRequestType.setAmount(moneyFromCents(payload.amountCents));
@@ -64,32 +68,14 @@ async function chargeOpaqueData(config, payload) {
     transactionRequestType.setOrder(order);
   }
 
-  if (Array.isArray(payload.lineItems) && payload.lineItems.length) {
-    const lines = payload.lineItems.slice(0, 30).map((item) => {
-      const line = new APIContracts.LineItemType();
-      line.setItemId(String(item.sku || item.id || '').slice(0, 31));
-      line.setName(String(item.name || 'item').slice(0, 31));
-      line.setDescription(String(item.description || item.name || '').slice(0, 255));
-      line.setQuantity(Number(item.quantity || 1));
-      line.setUnitPrice((Number(item.unitPriceCents || 0) / 100).toFixed(2));
-      return line;
-    });
-
-    const arr = new APIContracts.ArrayOfLineItem();
-    arr.setLineItem(lines);
-    transactionRequestType.setLineItems(arr);
-  }
-
-  if (payload.customer?.email) {
-    const customer = new APIContracts.CustomerDataType();
-    customer.setEmail(payload.customer.email);
-    transactionRequestType.setCustomer(customer);
-  }
-
   const request = new APIContracts.CreateTransactionRequest();
   request.setMerchantAuthentication(merchantAuth(config));
   request.setTransactionRequest(transactionRequestType);
+  return request;
+}
 
+async function chargeOpaqueData(config, payload) {
+  const request = buildChargeRequest(config, payload);
   const controller = new APIControllers.CreateTransactionController(request.getJSON());
   const response = await execute(controller, config.authnet.sandbox);
 
@@ -160,6 +146,7 @@ async function refundTransaction(config, payload) {
 }
 
 module.exports = {
+  buildChargeRequest,
   chargeOpaqueData,
   normalizeRefundCardReference,
   refundTransaction,
