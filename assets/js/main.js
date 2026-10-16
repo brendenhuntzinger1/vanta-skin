@@ -267,12 +267,22 @@
     };
     form.addEventListener("change", draw);
     draw();
-    form.addEventListener("submit", (e) => {
+    form.addEventListener("submit", async (e) => {
       e.preventDefault();
       const msg = document.getElementById("checkout-msg");
       if (!form.checkValidity()) { form.reportValidity(); return; }
+      msg.innerHTML = "";
       const data = Object.fromEntries(new FormData(form).entries());
       const order = { items, subtotal: sub, shipping: data.shipping, customer: data };
+      if (S.paymentsEnabled && S.authnet?.enabled && typeof window.VANTA_TOKENIZE_CARD === "function") {
+        try {
+          const opaqueData = await window.VANTA_TOKENIZE_CARD();
+          order.opaqueData = opaqueData;
+        } catch (err) {
+          msg.innerHTML = `<div class="notice"><strong>Payment setup issue.</strong> ${esc(err?.message || "Unable to tokenize card details.")}</div>`;
+          return;
+        }
+      }
       if (S.paymentsEnabled && typeof window.VANTA_PAY === "function") { window.VANTA_PAY(order); return; }
       msg.innerHTML = `<div class="notice"><strong>Checkout is almost ready.</strong> Online payments are being set up — please check back shortly or email <a href="mailto:${S.email}">${S.email}</a> to place your order. Your cart has been saved.</div>`;
     });
