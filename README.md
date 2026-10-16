@@ -20,6 +20,9 @@ This repository now includes server-to-server payment endpoints under `/api/paym
 - `POST /api/payments/refund`
 - `POST /api/payments/void`
 - `POST /api/payments/webhook`
+- `POST /api/payments/sync-retry` (re-deliver pending status callbacks to Vanta Labs)
+
+Vanta Labs remains the system of record for orders, fulfillment, inventory, and customer communications. Vanta Skin stores payment/security/audit/sync records only.
 
 ### Security controls
 
@@ -59,13 +62,15 @@ Optional:
 
 - `SUPABASE_URL`
 - `SUPABASE_SERVICE_ROLE_KEY`
-- `SUPABASE_ORDERS_TABLE` (default `orders`)
-- `SUPABASE_ORDER_ID_COLUMN` (default `id`)
-- `SUPABASE_ORDER_AMOUNT_COLUMN` (default `total_amount_cents`)
-- `SUPABASE_ORDER_CURRENCY_COLUMN` (default `currency`)
-- `SUPABASE_ORDER_PAYMENT_STATUS_COLUMN` (default `payment_status`)
-- `SUPABASE_ORDER_PAYMENT_TRANSACTION_COLUMN` (default `payment_transaction_id`)
-- `SUPABASE_ORDER_UPDATED_AT_COLUMN` (default `updated_at`)
+
+#### Labs synchronization callback (recommended)
+
+- `VANTA_LABS_SYNC_ENDPOINT_URL` (server endpoint in Vanta Labs that receives payment status events)
+- `VANTA_LABS_SYNC_KEY_ID`
+- `VANTA_LABS_SYNC_SHARED_SECRET`
+- `VANTA_LABS_SYNC_TIMEOUT_MS` (default `8000`)
+- `VANTA_SYNC_RETRY_TOKEN` (required to call `/api/payments/sync-retry`)
+- `VANTA_SYNC_RETRY_BATCH_SIZE` (default `25`)
 
 ### Database migration
 
@@ -75,14 +80,13 @@ Run:
 supabase db push
 ```
 
-Migration file:
+Migration files:
 
 - `supabase/migrations/20261016000000_payment_bridge.sql`
-
-This creates durable idempotency/replay/webhook/payment audit tables and optional payment columns on `orders` if missing.
-If the first migration is already applied, also apply the webhook reconciliation follow-up migration:
-
 - `supabase/migrations/20261016001000_payment_webhook_reconciliation.sql`
+- `supabase/migrations/20261016002000_payment_sync_outbox.sql`
+
+These create durable idempotency/replay/webhook/payment audit tables plus an outbound sync outbox for reliable callbacks to Vanta Labs.
 
 ### Vanta Labs integration handoff
 
@@ -100,5 +104,7 @@ See `/home/runner/work/vanta-skin/vanta-skin/VANTA_LABS_HANDOFF.md` for the Stag
 2. Use Authorize.net sandbox credentials and card test numbers.
 3. Confirm duplicate retry with same idempotency key returns cached result.
 4. Confirm duplicate nonce is rejected.
-5. Confirm order amount mismatch is rejected before authorization.
-6. Confirm `payment_events` + order payment status are updated.
+5. Confirm line-item totals match `amountCents` when line items are sent.
+6. Confirm raw card fields are rejected (only `opaqueData` accepted).
+7. Confirm callbacks reach Vanta Labs and duplicate callbacks are deduplicated by `eventId`.
+8. Confirm failed callbacks are retried with `/api/payments/sync-retry`.

@@ -84,17 +84,3 @@ create policy "service role full access authnet_webhook_events"
   to service_role
   using (true)
   with check (true);
-
--- Optional helpers for repositories whose orders table does not already track payment state.
-do $$
-begin
-  if exists (select 1 from information_schema.tables where table_schema='public' and table_name='orders') then
-    if not exists (select 1 from information_schema.columns where table_schema='public' and table_name='orders' and column_name='payment_status') then
-      alter table public.orders add column payment_status text;
-    end if;
-
-    if not exists (select 1 from information_schema.columns where table_schema='public' and table_name='orders' and column_name='payment_transaction_id') then
-      alter table public.orders add column payment_transaction_id text;
-    end if;
-  end if;
-end $$;

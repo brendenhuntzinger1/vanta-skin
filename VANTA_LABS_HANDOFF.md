@@ -2,6 +2,12 @@
 
 This document defines the exact integration contract for the Vanta Labs backend to call the Vanta Skin payment service.
 
+## System-of-record boundary (critical)
+
+- **Vanta Labs Research is the primary system of record** for orders, sales, inventory, shipping, revenue reporting, affiliate commissions, and customer communications.
+- **Vanta Skin only handles payment processing + payment audit/sync records.**
+- Vanta Skin must not trigger fulfillment, Shippo labels, Customer.io messages, or marketing flows.
+
 ## 1) Base URLs
 
 - **Sandbox:** `https://<vanta-skin-deployment-domain>` with `AUTHNET_SANDBOX=true`
@@ -16,6 +22,7 @@ All endpoints are `POST` and require bridge authentication headers.
 - `POST /api/payments/void`
 - `POST /api/payments/webhook` (Authorize.net only; not called by Vanta Labs)
 - `GET /api/payments/tokenize-config` (browser/client config fetch)
+- `POST /api/payments/sync-retry` (ops endpoint for replaying failed payment-status callbacks to Vanta Labs)
 
 ## 3) Required Headers (Vanta Labs backend → Vanta Skin backend)
 
@@ -202,6 +209,7 @@ Never send raw PAN/CVV to Vanta Labs backend or Vanta Skin backend.
 - `payment_events`: transaction audit trail (includes origin storefront + payloads)
 - `authnet_webhook_events`: webhook event ledger
   - includes `transaction_id`, `reconciled_order_id`, and `reconciled_status` for reconciliation traceability
+- `payment_order_sync_events`: outbound callback outbox with delivery status, attempts, and errors
 
 ### For Vanta Labs side
 
@@ -216,7 +224,55 @@ When calling `charge/refund/void`, store and update in Labs DB:
 
 On successful charge, update Labs order state to paid and continue existing fulfillment/email flow.
 
-## 10) Sandbox Rollout Sequence
+## 10) Vanta Skin → Vanta Labs callback contract (for reliable synchronization)
+
+Vanta Skin sends payment status callbacks to `VANTA_LABS_SYNC_ENDPOINT_URL` (if configured).  
+This is how webhook updates/refunds/voids are propagated back to Labs without making Vanta Skin an order system.
+
+### Callback headers
+
+- `content-type: application/json`
+- `x-vanta-key-id`
+- `x-vanta-timestamp`
+- `x-vanta-nonce`
+- `x-vanta-signature` (same canonical HMAC format)
+- `x-idempotency-key` (set to callback `eventId`)
+
+### Callback payload
+
+```json
+{
+  "eventId": "bridge:charge:idem-123:labs-order-123:1234567890:captured",
+  "source": "vanta-skin-payment-bridge",
+  "action": "charge",
+  "orderId": "labs-order-123",
+  "originStorefront": "vantalabsresearch.com",
+  "amountCents": 12995,
+  "currency": "USD",
+  "transactionId": "1234567890",
+  "paymentStatus": "captured",
+  "processorCode": "1",
+  "message": "This transaction has been approved.",
+  "sandbox": true,
+  "occurredAt": "2026-10-16T00:00:00.000Z"
+}
+```
+
+### Labs-side callback handling requirements
+
+- Treat `eventId` as globally unique and idempotent.
+- Keep a processed-events table keyed by `eventId`.
+- If `eventId` already processed, return `200` and do nothing.
+- Only Labs updates order paid/refund/void state and triggers fulfillment/email workflows.
+
+### Retry behavior
+
+- Vanta Skin records callback attempts in `payment_order_sync_events`.
+- Failed deliveries remain pending/failed for retry.
+- Ops can call `POST /api/payments/sync-retry` on Vanta Skin with:
+  - header: `x-sync-retry-token: <VANTA_SYNC_RETRY_TOKEN>`
+
+## 11) Sandbox Rollout Sequence
 
 1. Keep all environments in sandbox mode.
 2. Configure shared HMAC key/secret pair in both services.
@@ -225,16 +281,16 @@ On successful charge, update Labs order state to paid and continue existing fulf
 5. Labs backend calls `/api/payments/charge` with headers + idempotency key.
 6. Validate order/amount consistency in Labs before bridge call.
 7. Run retries to verify idempotency behavior and nonce replay rejection.
-8. Verify webhook events and payment audit logs in Supabase.
+8. Verify webhook events, callback deliveries, and retry behavior in Supabase.
 
-## 11) Security/Compliance Notes
+## 12) Security/Compliance Notes
 
 - Keep processor and Supabase secrets server-side only.
 - Do not falsify product descriptions, storefront source, or order metadata.
 - Preserve `originStorefront` and line-item visibility for processor/audit requirements.
 - Do not switch to live processing until written approval and production sign-off.
 
-## 12) Environment Variables (Vanta Skin)
+## 13) Environment Variables (Vanta Skin)
 
 Required:
 - `AUTHNET_API_LOGIN_ID`
@@ -252,3 +308,9 @@ Recommended:
 Sandbox / policy controls:
 - `AUTHNET_SANDBOX=true`
 - `VANTA_ALLOWED_ORIGIN_STOREFRONTS=vantalabsresearch.com`
+
+Sync callback controls:
+- `VANTA_LABS_SYNC_ENDPOINT_URL`
+- `VANTA_LABS_SYNC_KEY_ID`
+- `VANTA_LABS_SYNC_SHARED_SECRET`
+- `VANTA_SYNC_RETRY_TOKEN`

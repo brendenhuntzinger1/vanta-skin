@@ -1,17 +1,19 @@
 const { loadConfig } = require('./config');
 const {
-  assertOrderMatches,
   createSupabase,
   findLatestPaymentEventByTransaction,
   findIdempotency,
-  markOrderPayment,
+  listPendingPaymentSyncEvents,
+  markPaymentSyncDeliveryAttempt,
   recordPaymentEvent,
   recordReplayNonce,
   recordWebhookEvent,
   saveIdempotency,
+  upsertPaymentSyncEvent,
 } = require('./supabase');
 const { verifyRequestSignature, verifyWebhookSignature } = require('./security');
 const { chargeOpaqueData, normalizeRefundCardReference, refundTransaction, voidTransaction } = require('./authnet');
+const { assertLabsSyncConfigured, buildSyncEventKey, deliverSyncEvent } = require('./sync');
 
 function assertString(value, field) {
   if (!value || typeof value !== 'string') throw new Error(`Missing or invalid ${field}`);
@@ -119,12 +121,6 @@ async function handleCharge(req, rawBody, payload) {
 
   const endpoint = '/api/payments/charge';
   return withIdempotency(supabase, endpoint, req.headers['x-idempotency-key'], signed.requestHash, async () => {
-    await assertOrderMatches(supabase, config, {
-      orderId: payload.orderId,
-      amountCents: payload.amountCents,
-      currency: payload.currency || config.authnet.defaultCurrency,
-    });
-
     const result = await chargeOpaqueData(config, payload);
     const paymentStatus = result.ok ? 'captured' : 'declined';
 
@@ -140,8 +136,43 @@ async function handleCharge(req, rawBody, payload) {
       response_payload: result.raw,
     });
 
-    if (result.ok) {
-      await markOrderPayment(supabase, config, payload.orderId, 'paid', result.transactionId);
+    const syncPayload = {
+      eventId: buildSyncEventKey({
+        source: 'bridge',
+        action: 'charge',
+        idempotencyKey: req.headers['x-idempotency-key'],
+        orderId: payload.orderId,
+        transactionId: result.transactionId,
+        paymentStatus,
+      }),
+      source: 'vanta-skin-payment-bridge',
+      action: 'charge',
+      orderId: payload.orderId,
+      originStorefront: payload.originStorefront,
+      amountCents: payload.amountCents,
+      currency: payload.currency || config.authnet.defaultCurrency,
+      transactionId: result.transactionId,
+      paymentStatus,
+      processorCode: result.statusCode,
+      message: result.message,
+      sandbox: config.authnet.sandbox,
+      occurredAt: new Date().toISOString(),
+      deliveryAttemptCount: 0,
+    };
+    const syncEvent = await upsertPaymentSyncEvent(supabase, {
+      event_key: syncPayload.eventId,
+      order_id: payload.orderId,
+      origin_storefront: payload.originStorefront,
+      event_type: 'payment.charge',
+      payment_status: paymentStatus,
+      transaction_id: result.transactionId,
+      payload: syncPayload,
+      delivery_status: assertLabsSyncConfigured(config) ? 'pending' : 'disabled',
+    });
+
+    if (assertLabsSyncConfigured(config) && syncEvent.delivery_status !== 'delivered') {
+      const attempt = await deliverSyncEvent(config, syncPayload);
+      await markPaymentSyncDeliveryAttempt(supabase, syncEvent.id, attempt);
     }
 
     const statusCode = result.ok ? 200 : 402;
@@ -186,8 +217,43 @@ async function handleVoid(req, rawBody, payload) {
       response_payload: result.raw,
     });
 
-    if (result.ok) {
-      await markOrderPayment(supabase, config, payload.orderId, 'voided', result.transactionId || payload.transactionId);
+    const syncPayload = {
+      eventId: buildSyncEventKey({
+        source: 'bridge',
+        action: 'void',
+        idempotencyKey: req.headers['x-idempotency-key'],
+        orderId: payload.orderId,
+        transactionId: result.transactionId || payload.transactionId,
+        paymentStatus,
+      }),
+      source: 'vanta-skin-payment-bridge',
+      action: 'void',
+      orderId: payload.orderId,
+      originStorefront: payload.originStorefront,
+      amountCents: payload.amountCents || null,
+      currency: payload.currency || config.authnet.defaultCurrency,
+      transactionId: result.transactionId || payload.transactionId,
+      paymentStatus,
+      processorCode: result.statusCode,
+      message: result.message,
+      sandbox: config.authnet.sandbox,
+      occurredAt: new Date().toISOString(),
+      deliveryAttemptCount: 0,
+    };
+    const syncEvent = await upsertPaymentSyncEvent(supabase, {
+      event_key: syncPayload.eventId,
+      order_id: payload.orderId,
+      origin_storefront: payload.originStorefront,
+      event_type: 'payment.void',
+      payment_status: paymentStatus,
+      transaction_id: result.transactionId || payload.transactionId,
+      payload: syncPayload,
+      delivery_status: assertLabsSyncConfigured(config) ? 'pending' : 'disabled',
+    });
+
+    if (assertLabsSyncConfigured(config) && syncEvent.delivery_status !== 'delivered') {
+      const attempt = await deliverSyncEvent(config, syncPayload);
+      await markPaymentSyncDeliveryAttempt(supabase, syncEvent.id, attempt);
     }
 
     const statusCode = result.ok ? 200 : 402;
@@ -235,8 +301,43 @@ async function handleRefund(req, rawBody, payload) {
       response_payload: result.raw,
     });
 
-    if (result.ok) {
-      await markOrderPayment(supabase, config, payload.orderId, 'refunded', result.transactionId || payload.transactionId);
+    const syncPayload = {
+      eventId: buildSyncEventKey({
+        source: 'bridge',
+        action: 'refund',
+        idempotencyKey: req.headers['x-idempotency-key'],
+        orderId: payload.orderId,
+        transactionId: result.transactionId || payload.transactionId,
+        paymentStatus,
+      }),
+      source: 'vanta-skin-payment-bridge',
+      action: 'refund',
+      orderId: payload.orderId,
+      originStorefront: payload.originStorefront,
+      amountCents: payload.amountCents,
+      currency: payload.currency || config.authnet.defaultCurrency,
+      transactionId: result.transactionId || payload.transactionId,
+      paymentStatus,
+      processorCode: result.statusCode,
+      message: result.message,
+      sandbox: config.authnet.sandbox,
+      occurredAt: new Date().toISOString(),
+      deliveryAttemptCount: 0,
+    };
+    const syncEvent = await upsertPaymentSyncEvent(supabase, {
+      event_key: syncPayload.eventId,
+      order_id: payload.orderId,
+      origin_storefront: payload.originStorefront,
+      event_type: 'payment.refund',
+      payment_status: paymentStatus,
+      transaction_id: result.transactionId || payload.transactionId,
+      payload: syncPayload,
+      delivery_status: assertLabsSyncConfigured(config) ? 'pending' : 'disabled',
+    });
+
+    if (assertLabsSyncConfigured(config) && syncEvent.delivery_status !== 'delivered') {
+      const attempt = await deliverSyncEvent(config, syncPayload);
+      await markPaymentSyncDeliveryAttempt(supabase, syncEvent.id, attempt);
     }
 
     const statusCode = result.ok ? 200 : 402;
@@ -272,12 +373,13 @@ async function handleWebhook(rawBody, signatureHeader) {
   const transactionId = extractWebhookTransactionId(payload);
   const reconciledStatus = mapWebhookEventToOrderStatus(eventType);
   let reconciledOrderId = null;
+  let reconciledOriginStorefront = null;
 
   if (transactionId && reconciledStatus) {
     const paymentEvent = await findLatestPaymentEventByTransaction(supabase, transactionId);
     if (paymentEvent?.order_id) {
       reconciledOrderId = paymentEvent.order_id;
-      await markOrderPayment(supabase, config, paymentEvent.order_id, reconciledStatus, transactionId);
+      reconciledOriginStorefront = paymentEvent.origin_storefront || null;
     }
   }
 
@@ -291,6 +393,42 @@ async function handleWebhook(rawBody, signatureHeader) {
     received_at: new Date().toISOString(),
   });
 
+  if (reconciledOrderId && reconciledStatus) {
+    const syncPayload = {
+      eventId: buildSyncEventKey({
+        source: 'webhook',
+        eventId: String(eventId || ''),
+      }),
+      source: 'authorize-net-webhook',
+      action: 'webhook_update',
+      orderId: reconciledOrderId,
+      originStorefront: reconciledOriginStorefront || 'unknown',
+      amountCents: null,
+      currency: null,
+      transactionId,
+      paymentStatus: reconciledStatus,
+      processorCode: null,
+      message: eventType,
+      sandbox: config.authnet.sandbox,
+      occurredAt: new Date().toISOString(),
+      deliveryAttemptCount: 0,
+    };
+    const syncEvent = await upsertPaymentSyncEvent(supabase, {
+      event_key: syncPayload.eventId,
+      order_id: reconciledOrderId,
+      origin_storefront: syncPayload.originStorefront,
+      event_type: 'payment.webhook',
+      payment_status: reconciledStatus,
+      transaction_id: transactionId,
+      payload: syncPayload,
+      delivery_status: assertLabsSyncConfigured(config) ? 'pending' : 'disabled',
+    });
+    if (assertLabsSyncConfigured(config) && syncEvent.delivery_status !== 'delivered') {
+      const attempt = await deliverSyncEvent(config, syncPayload);
+      await markPaymentSyncDeliveryAttempt(supabase, syncEvent.id, attempt);
+    }
+  }
+
   return {
     statusCode: 200,
     body: {
@@ -303,12 +441,54 @@ async function handleWebhook(rawBody, signatureHeader) {
   };
 }
 
+async function retryPendingSyncDeliveries(authTokenFromRequest) {
+  const config = loadConfig();
+  const supabase = createSupabase(config);
+
+  if (!config.labsSync.retryAuthToken) {
+    throw new Error('VANTA_SYNC_RETRY_TOKEN is not configured');
+  }
+  if (authTokenFromRequest !== config.labsSync.retryAuthToken) {
+    const err = new Error('Unauthorized retry token');
+    err.statusCode = 401;
+    throw err;
+  }
+
+  const pending = await listPendingPaymentSyncEvents(supabase, config.labsSync.retryBatchSize);
+  const results = [];
+  for (const event of pending) {
+    const payload = {
+      ...event.payload,
+      deliveryAttemptCount: Number(event.delivery_attempt_count || 0),
+    };
+    const attempt = await deliverSyncEvent(config, payload);
+    await markPaymentSyncDeliveryAttempt(supabase, event.id, attempt);
+    results.push({
+      id: event.id,
+      eventKey: event.event_key,
+      delivered: attempt.delivered,
+      httpStatus: attempt.httpStatus || null,
+      error: attempt.error || null,
+    });
+  }
+
+  return {
+    statusCode: 200,
+    body: {
+      ok: true,
+      retried: results.length,
+      results,
+    },
+  };
+}
+
 module.exports = {
   assertChargeLineItemsAmount,
   assertNoSensitiveCardFields,
   mapWebhookEventToOrderStatus,
   handleCharge,
   handleRefund,
+  retryPendingSyncDeliveries,
   handleVoid,
   handleWebhook,
 };

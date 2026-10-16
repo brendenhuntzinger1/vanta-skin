@@ -32,6 +32,13 @@ function envBool(name, fallback = false) {
   return value === '1' || value === 'true' || value === 'yes';
 }
 
+function optionalNumber(name, fallback) {
+  const value = optional(name, String(fallback));
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return parsed;
+}
+
 function loadConfig() {
   const hmacSecrets = loadHmacSecrets();
   if (!Object.keys(hmacSecrets).length) {
@@ -60,13 +67,14 @@ function loadConfig() {
     supabase: {
       url: required('SUPABASE_URL'),
       serviceRoleKey: required('SUPABASE_SERVICE_ROLE_KEY'),
-      ordersTable: optional('SUPABASE_ORDERS_TABLE', 'orders'),
-      orderIdColumn: optional('SUPABASE_ORDER_ID_COLUMN', 'id'),
-      orderAmountColumn: optional('SUPABASE_ORDER_AMOUNT_COLUMN', 'total_amount_cents'),
-      orderCurrencyColumn: optional('SUPABASE_ORDER_CURRENCY_COLUMN', 'currency'),
-      orderStatusColumn: optional('SUPABASE_ORDER_PAYMENT_STATUS_COLUMN', 'payment_status'),
-      orderTransactionColumn: optional('SUPABASE_ORDER_PAYMENT_TRANSACTION_COLUMN', 'payment_transaction_id'),
-      orderUpdatedAtColumn: optional('SUPABASE_ORDER_UPDATED_AT_COLUMN', 'updated_at'),
+    },
+    labsSync: {
+      endpointUrl: optional('VANTA_LABS_SYNC_ENDPOINT_URL', ''),
+      outboundKeyId: optional('VANTA_LABS_SYNC_KEY_ID', ''),
+      outboundSharedSecret: optional('VANTA_LABS_SYNC_SHARED_SECRET', ''),
+      timeoutMs: optionalNumber('VANTA_LABS_SYNC_TIMEOUT_MS', 8000),
+      retryAuthToken: optional('VANTA_SYNC_RETRY_TOKEN', ''),
+      retryBatchSize: optionalNumber('VANTA_SYNC_RETRY_BATCH_SIZE', 25),
     },
   };
 }

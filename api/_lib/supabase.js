@@ -6,52 +6,6 @@ function createSupabase(config) {
   });
 }
 
-async function assertOrderMatches(supabase, config, { orderId, amountCents, currency }) {
-  const table = config.supabase.ordersTable;
-  const idCol = config.supabase.orderIdColumn;
-  const amountCol = config.supabase.orderAmountColumn;
-  const currencyCol = config.supabase.orderCurrencyColumn;
-
-  const { data, error } = await supabase
-    .from(table)
-    .select(`${idCol}, ${amountCol}, ${currencyCol}`)
-    .eq(idCol, orderId)
-    .single();
-
-  if (error || !data) {
-    throw new Error(`Unable to validate order ${orderId}: ${error?.message || 'not found'}`);
-  }
-
-  if (amountCents !== undefined && Number(data[amountCol]) !== Number(amountCents)) {
-    throw new Error(`Order amount mismatch for ${orderId}`);
-  }
-
-  if (currency && data[currencyCol] && String(data[currencyCol]).toUpperCase() !== String(currency).toUpperCase()) {
-    throw new Error(`Order currency mismatch for ${orderId}`);
-  }
-
-  return data;
-}
-
-async function markOrderPayment(supabase, config, orderId, paymentStatus, transactionId) {
-  const table = config.supabase.ordersTable;
-  const idCol = config.supabase.orderIdColumn;
-  const payload = {
-    [config.supabase.orderStatusColumn]: paymentStatus,
-    [config.supabase.orderTransactionColumn]: transactionId,
-    [config.supabase.orderUpdatedAtColumn]: new Date().toISOString(),
-  };
-
-  const { error } = await supabase
-    .from(table)
-    .update(payload)
-    .eq(idCol, orderId);
-
-  if (error) {
-    throw new Error(`Unable to update order ${orderId}: ${error.message}`);
-  }
-}
-
 async function recordReplayNonce(supabase, keyId, nonce, requestHash) {
   const { error } = await supabase
     .from('payment_request_replays')
@@ -112,7 +66,7 @@ async function findLatestPaymentEventByTransaction(supabase, transactionId) {
   if (!transactionId) return null;
   const { data, error } = await supabase
     .from('payment_events')
-    .select('order_id, status')
+    .select('order_id, status, origin_storefront')
     .eq('authnet_transaction_id', String(transactionId))
     .order('created_at', { ascending: false })
     .limit(1)
@@ -122,14 +76,72 @@ async function findLatestPaymentEventByTransaction(supabase, transactionId) {
   return data || null;
 }
 
+async function upsertPaymentSyncEvent(supabase, event) {
+  const payload = {
+    event_key: event.event_key,
+    order_id: event.order_id,
+    origin_storefront: event.origin_storefront,
+    event_type: event.event_type,
+    payment_status: event.payment_status,
+    transaction_id: event.transaction_id,
+    payload: event.payload,
+    delivery_status: event.delivery_status || 'pending',
+    updated_at: new Date().toISOString(),
+  };
+
+  const { data, error } = await supabase
+    .from('payment_order_sync_events')
+    .upsert(payload, { onConflict: 'event_key' })
+    .select('id, event_key, delivery_status, delivery_attempt_count')
+    .single();
+
+  if (error) throw new Error(`Unable to upsert payment sync event: ${error.message}`);
+  return data;
+}
+
+async function markPaymentSyncDeliveryAttempt(supabase, syncEventId, attemptResult) {
+  const payload = {
+    delivery_status: attemptResult.delivered ? 'delivered' : 'failed',
+    delivery_attempt_count: attemptResult.deliveryAttemptCount,
+    last_delivery_http_status: attemptResult.httpStatus || null,
+    last_delivery_error: attemptResult.error || null,
+    last_delivery_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  };
+
+  if (attemptResult.delivered) {
+    payload.delivered_at = new Date().toISOString();
+  }
+
+  const { error } = await supabase
+    .from('payment_order_sync_events')
+    .update(payload)
+    .eq('id', syncEventId);
+
+  if (error) throw new Error(`Unable to update payment sync delivery attempt: ${error.message}`);
+}
+
+async function listPendingPaymentSyncEvents(supabase, limit = 25) {
+  const { data, error } = await supabase
+    .from('payment_order_sync_events')
+    .select('id, event_key, order_id, origin_storefront, event_type, payment_status, transaction_id, payload, delivery_attempt_count')
+    .in('delivery_status', ['pending', 'failed'])
+    .order('created_at', { ascending: true })
+    .limit(limit);
+
+  if (error) throw new Error(`Unable to list pending sync events: ${error.message}`);
+  return data || [];
+}
+
 module.exports = {
-  assertOrderMatches,
   createSupabase,
   findLatestPaymentEventByTransaction,
   findIdempotency,
-  markOrderPayment,
+  listPendingPaymentSyncEvents,
+  markPaymentSyncDeliveryAttempt,
   recordPaymentEvent,
   recordReplayNonce,
   recordWebhookEvent,
   saveIdempotency,
+  upsertPaymentSyncEvent,
 };
