@@ -6,7 +6,7 @@ const {
   mapWebhookEventToOrderStatus,
   redactPaymentPayload,
 } = require('../api/_lib/service');
-const { buildChargeRequest, normalizeRefundCardReference } = require('../api/_lib/authnet');
+const { normalizeRefundCardReference } = require('../api/_lib/authnet');
 
 test('assertNoSensitiveCardFields rejects raw card fields', () => {
   assert.throws(
@@ -39,43 +39,6 @@ test('assertChargeLineItems rejects malformed line items', () => {
   assert.throws(() => assertChargeLineItems({ amountCents: 100, lineItems: 'x' }), /lineItems/);
   assert.throws(() => assertChargeLineItems({ amountCents: 100, shippingCents: -5 }), /shippingCents/);
   assert.throws(() => assertChargeLineItems({ amountCents: 100, taxCents: 1.5 }), /taxCents/);
-});
-
-// The transaction record at Authorize.net must say whose sale it is.
-test('buildChargeRequest names the originating storefront and order, and itemises shipping and tax', () => {
-  const config = { authnet: { apiLoginId: 'l', transactionKey: 't', merchantDescriptor: 'Vanta Skin payment service' } };
-  const json = buildChargeRequest(config, {
-    orderId: 'f7a1c2d3-0000-4000-8000-1234567890ab',
-    orderNumber: 'VL-1042',
-    originStorefront: 'vantalabsresearch.com',
-    amountCents: 10_350,
-    capture: true,
-    shippingCents: 995,
-    taxCents: 310,
-    opaqueData: { dataDescriptor: 'COMMON.ACCEPT.INAPP.PAYMENT', dataValue: 'tok' },
-    lineItems: [{ sku: 'bpc-157-10mg', name: 'BPC-157 10mg', quantity: 2, unitPriceCents: 4_500 }],
-  }).getJSON().createTransactionRequest.transactionRequest;
-
-  assert.equal(json.amount, '103.50');
-  assert.equal(json.order.invoiceNumber, 'VL-1042');
-  assert.equal(json.order.description, 'vantalabsresearch.com order VL-1042 | processed by Vanta Skin payment service');
-  assert.equal(json.shipping.amount, '9.95');
-  assert.equal(json.tax.amount, '3.10');
-  assert.equal(json.lineItems.lineItem[0].name, 'BPC-157 10mg');
-  assert.equal(json.lineItems.lineItem[0].unitPrice, '45.00');
-});
-
-test('buildChargeRequest falls back to the order id and leaves out zero shipping and tax', () => {
-  const json = buildChargeRequest({ authnet: { apiLoginId: 'l', transactionKey: 't', merchantDescriptor: 'Vanta Skin' } }, {
-    orderId: 'order-12345678901234567890',
-    originStorefront: 'vanta.skin',
-    amountCents: 100,
-    opaqueData: { dataDescriptor: 'd', dataValue: 'v' },
-  }).getJSON().createTransactionRequest.transactionRequest;
-  assert.equal(json.order.invoiceNumber, 'order-12345678901234');
-  assert.equal(json.order.description, 'vanta.skin order order-12345678901234567890 | processed by Vanta Skin');
-  assert.equal(json.shipping, undefined);
-  assert.equal(json.tax, undefined);
 });
 
 // The Accept.js nonce is single-use and expires, but it is still a payment

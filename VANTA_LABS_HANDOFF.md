@@ -99,8 +99,7 @@ Time skew window:
 Validation notes:
 - `originStorefront` must be in the Vanta Skin allowlist (`VANTA_ALLOWED_ORIGIN_STOREFRONTS`).
 - `amountCents` is authoritative (computed by the storefront from its order and signed). `lineItems` are the real goods at their own prices (positive integer `quantity`, non-negative integer `unitPriceCents`) and need not sum to `amountCents`: coupons, free items and credits are why.
-- Optional `orderNumber` (shown as the Authorize.net invoice number), `shippingCents` and `taxCents` (itemised in Authorize.net's shipping and tax fields).
-- The transaction description is `<originStorefront> order <orderNumber> | processed by <AUTHNET_MERCHANT_DESCRIPTOR>`: the originating storefront is always named.
+- Optional `shippingCents` and `taxCents` are validated as non-negative integers. The Authorize.net transaction fields (invoice number, description, line items) are unchanged pending review of the written merchant approval.
 - Raw card fields (PAN/CVV/etc.) are rejected; only `opaqueData` is accepted.
 
 ### Success response (`200`)
