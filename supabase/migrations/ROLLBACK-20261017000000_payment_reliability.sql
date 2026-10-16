@@ -1,0 +1,57 @@
+-- ROLLBACK for 20261017000000_payment_reliability.sql — MANUAL, NOT A MIGRATION.
+--
+-- Every statement below is commented out on purpose so that nothing happens
+-- if this file is ever executed by accident. The file name does not match the
+-- Supabase CLI's <timestamp>_name.sql pattern, so `supabase db push` skips it.
+--
+-- Order of operations:
+--   1. Deploy the previous payment-service code first. The new code needs the
+--      columns removed below; the old code tolerates the new columns.
+--   2. Resolve every payment_idempotency row that is not 'completed'
+--      (in_progress / uncertain). Each one is an attempt whose result was
+--      never saved: reconcile it with Authorize.Net (or Labs's
+--      /api/payments/reconcile flow) BEFORE deleting it. Those rows are what
+--      stop a second charge for the same attempt key.
+--   3. Uncomment and run the statements below in one transaction.
+--   4. Leave the anon/authenticated privileges revoked. Re-granting them is
+--      not part of a rollback.
+--
+-- begin;
+--
+-- -- payment_order_sync_events
+-- update public.payment_order_sync_events set delivery_status = 'failed' where delivery_status = 'dead';
+-- alter table public.payment_order_sync_events drop constraint if exists payment_order_sync_events_delivery_status_check;
+-- alter table public.payment_order_sync_events
+--   add constraint payment_order_sync_events_delivery_status_check
+--   check (delivery_status in ('pending', 'failed', 'delivered', 'disabled'));
+-- drop index if exists public.payment_order_sync_events_due_idx;
+-- alter table public.payment_order_sync_events drop column if exists next_attempt_at;
+--
+-- -- authnet_webhook_events
+-- alter table public.authnet_webhook_events drop column if exists verification;
+--
+-- -- payment_events
+-- drop index if exists public.payment_events_charge_idempotency_key_uidx;
+-- drop index if exists public.payment_events_trans_action_idx;
+-- alter table public.payment_events drop constraint if exists payment_events_outcome_check;
+-- alter table public.payment_events drop constraint if exists payment_events_card_last4_check;
+-- alter table public.payment_events
+--   drop column if exists outcome,
+--   drop column if exists card_last4,
+--   drop column if exists card_type,
+--   drop column if exists ref_id,
+--   drop column if exists idempotency_key,
+--   drop column if exists auth_amount_cents,
+--   drop column if exists original_transaction_id;
+--
+-- -- payment_idempotency (only after step 2 above)
+-- delete from public.payment_idempotency where status <> 'completed';
+-- drop index if exists public.payment_idempotency_status_idx;
+-- alter table public.payment_idempotency drop constraint if exists payment_idempotency_completed_has_response;
+-- alter table public.payment_idempotency drop constraint if exists payment_idempotency_status_check;
+-- alter table public.payment_idempotency alter column response_status set not null;
+-- alter table public.payment_idempotency alter column response_body set not null;
+-- alter table public.payment_idempotency drop column if exists status;
+-- -- updated_at existed before this migration (20261016000000); keep it.
+--
+-- commit;

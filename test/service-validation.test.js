@@ -6,7 +6,7 @@ const {
   mapWebhookEventToOrderStatus,
   redactPaymentPayload,
 } = require('../api/_lib/service');
-const { normalizeRefundCardReference } = require('../api/_lib/authnet');
+const { buildChargeRequest, normalizeRefundCardReference } = require('../api/_lib/authnet');
 
 test('assertNoSensitiveCardFields rejects raw card fields', () => {
   assert.throws(
@@ -60,5 +60,29 @@ test('mapWebhookEventToOrderStatus maps known event types', () => {
 test('normalizeRefundCardReference accepts only safe formats', () => {
   assert.equal(normalizeRefundCardReference('1111'), 'XXXX1111');
   assert.equal(normalizeRefundCardReference('xxxx1111'), 'XXXX1111');
-  assert.throws(() => normalizeRefundCardReference('4111111111111111'), /must be last 4 digits/);
+  assert.throws(() => normalizeRefundCardReference('4111111111111111'), /last 4 digits/);
+  assert.throws(() => normalizeRefundCardReference(''), /last 4 digits/);
+  assert.throws(() => normalizeRefundCardReference('123'), /last 4 digits/);
+});
+
+// The full Authorize.Net field inventory is pinned in authnet-payload.test.js.
+// Line items and product names are still never sent, even when supplied.
+test('buildChargeRequest sends no line items or product names', () => {
+  const config = { authnet: { apiLoginId: 'l', transactionKey: 't', merchantDescriptor: 'Vanta Skin' } };
+  const json = buildChargeRequest(config, {
+    orderId: 'order-2f5da385-b1b1-42be-a806-80adb74205f4',
+    originStorefront: 'vantalabsresearch.com',
+    amountCents: 4604,
+    capture: true,
+    opaqueData: { dataDescriptor: 'COMMON.ACCEPT.INAPP.PAYMENT', dataValue: 'tok' },
+    lineItems: [{ sku: 'bpc-157', name: 'BPC-157 5mg', quantity: 1, unitPriceCents: 2999 }],
+  }, { refId: 'r' }).getJSON().createTransactionRequest.transactionRequest;
+
+  assert.equal(json.lineItems, undefined);
+  assert.equal(JSON.stringify(json).includes('BPC-157'), false);
+  assert.equal(json.transactionType, 'authCaptureTransaction');
+  assert.equal(json.amount, '46.04');
+  assert.equal(json.payment.opaqueData.dataValue, 'tok');
+  assert.match(json.order.invoiceNumber, /^VS-[0-9A-F]{17}$/);
+  assert.equal(json.order.description, 'Vanta Skin | vanta.skin');
 });
