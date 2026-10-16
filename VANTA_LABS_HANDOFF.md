@@ -1,335 +1,299 @@
 # Vanta Labs → Vanta Skin Payment Bridge Handoff (Sandbox First)
 
-This document defines the exact integration contract for the Vanta Labs backend to call the Vanta Skin payment service.
+This document defines the integration contract between the Vanta Labs backend
+and the Vanta Skin payment service. It matches the code in `api/_lib/` and the
+tests in `test/`.
 
 ## System-of-record boundary (critical)
 
 - **Vanta Labs Research is the primary system of record** for orders, sales, inventory, shipping, revenue reporting, affiliate commissions, and customer communications.
 - **Vanta Skin only handles payment processing + payment audit/sync records.**
 - Vanta Skin must not trigger fulfillment, Shippo labels, Customer.io messages, or marketing flows.
+- The customer never leaves Labs. Text Labs shows a customer comes from `customerMessage` only — never `message`, which is internal processor text.
 
-## 1) Base URLs
+## 1) Base URLs and mode
 
-- **Sandbox:** `https://<vanta-skin-deployment-domain>` with `AUTHNET_SANDBOX=true`
-- **Production (do not enable yet):** same endpoints after explicit approval.
+- **Sandbox:** `https://<vanta-skin-deployment-domain>` (default).
+- **Live** requires all three, exactly: `AUTHNET_SANDBOX=false`, `AUTHNET_LIVE_APPROVED=true`, `VERCEL_ENV=production`.
+  `AUTHNET_SANDBOX=false` without the other two is a configuration error: every
+  payment endpoint answers `503` (`outcome: "rejected"`, not charged) until it is
+  fixed. Any other `AUTHNET_SANDBOX` value (unset, `""`, `TRUE`, `on`, …) is sandbox.
+- A charge with `"requireSandbox": true` against a live service is refused with
+  `422` (`outcome: "rejected"`, `retryable: false`) before the gateway.
 
 ## 2) Endpoints
 
-All endpoints are `POST` and require bridge authentication headers.
+| Method | Path | Caller | Money moves |
+|---|---|---|---|
+| POST | `/api/payments/charge` | Labs backend (signed) | yes |
+| POST | `/api/payments/refund` | Labs backend (signed) | yes |
+| POST | `/api/payments/void` | Labs backend (signed) | yes |
+| POST | `/api/payments/reconcile` | Labs backend (signed) | **no** (read-only lookup) |
+| POST | `/api/payments/webhook` | Authorize.Net only | no |
+| GET | `/api/payments/tokenize-config` | browser | no |
+| GET | `/api/payments/health` | Labs / ops (signed) | no |
+| POST | `/api/payments/sync-retry` | ops / cron (`x-sync-retry-token`) | no |
 
-- `POST /api/payments/charge`
-- `POST /api/payments/refund`
-- `POST /api/payments/void`
-- `POST /api/payments/webhook` (Authorize.net only; not called by Vanta Labs)
-- `GET /api/payments/tokenize-config` (browser/client config fetch)
-- `POST /api/payments/sync-retry` (ops endpoint for replaying failed payment-status callbacks to Vanta Labs)
-
-## 3) Required Headers (Vanta Labs backend → Vanta Skin backend)
+## 3) Required headers (Labs backend → Skin)
 
 - `content-type: application/json`
-- `x-vanta-key-id: <key id>`
-- `x-vanta-timestamp: <unix-seconds>`
-- `x-vanta-nonce: <unique random nonce per request>`
-- `x-vanta-signature: <hex hmac sha256>`
-- `x-idempotency-key: <unique key per operation intent>`
+- `x-vanta-key-id`, `x-vanta-timestamp` (unix seconds), `x-vanta-nonce` (unique per HTTP request), `x-vanta-signature`
+- `x-idempotency-key` — required for charge/refund/void. For charges it is the
+  **attempt key** `vskin:charge:<orderId>:<attemptNo>`, unique per attempt.
 
 ### Replay and idempotency rules
 
-- Reusing the same `(x-vanta-key-id, x-vanta-nonce)` is rejected (`409`).
-- For retries, generate a **new nonce** each attempt but reuse the same idempotency key for the same operation intent.
-- Idempotency key is required for `charge/refund/void`.
-- If same idempotency key is reused with a different payload hash, request is rejected (`409`).
-- If same idempotency key and same payload hash are reused, cached response is returned with `replayed: true`.
+- Reusing `(x-vanta-key-id, x-vanta-nonce)` → `409`, `outcome: "invalid"`. Use a new nonce on every HTTP retry.
+- The idempotency key is **claimed before the gateway is called** (plain INSERT, status `in_progress`). Then:
+  - same key, request still running → `409`, `outcome: "in_progress"` (no second gateway call);
+  - same key + same body, finished → the stored response, `replayed: true`;
+  - same key + different body → `409`, `outcome: "conflict"`;
+  - same key whose result is unknown → `502`, `outcome: "uncertain"`, `replayed: true`.
+- Requests refused before the claim (bad signature, bad input, sandbox requirement, live not approved) leave no claim behind.
 
-## 4) HMAC Signing Format
+## 4) HMAC signing format
 
-### Canonical message
+Canonical message, joined with `\n`:
 
-Join these fields with newline (`\n`), exactly in order:
-
-1. HTTP method uppercased (e.g. `POST`)
+1. HTTP method uppercased
 2. URL path only (no query string), e.g. `/api/payments/charge`
 3. `x-vanta-timestamp`
 4. `x-vanta-nonce`
-5. SHA-256 hex of raw JSON body string
+5. SHA-256 hex of the raw JSON body
 
-Canonical string example:
+`x-vanta-signature = HMAC_SHA256_HEX(sharedSecret, canonicalMessage)`.
+Max skew `VANTA_HMAC_MAX_SKEW_SECONDS` (default 300; any value that is not a finite positive number falls back to 300).
 
-`POST\n/api/payments/charge\n1729036800\n5f4dcc3b-...\n<sha256-body-hex>`
+## 5) Outcomes (shared vocabulary)
 
-Signature:
+| outcome | HTTP | meaning |
+|---|---|---|
+| `captured` | 200 | Authorize.Net responseCode 1 with a transId. Money taken. |
+| `held` | 202 | responseCode 4 (held for review). Not paid; lock the order; admin review. |
+| `declined` | 402 | responseCode 2. Not charged. Retry with a new card/token. |
+| `rejected` | 422 | Definitively not charged: responseCode 3, an API error with no transaction response, or Skin refused before the gateway (e.g. sandbox required). `503` with `rejected` = a dependency or configuration is down; also not charged. Retry only if `retryable: true`. |
+| `invalid` | 400 (401 bad signature, 409 replayed nonce) | Bad input or signature. Not charged. |
+| `in_progress` | 409 | Another request holds this key. |
+| `conflict` | 409 | Same key, different body. |
+| `uncertain` | 502 | The gateway may or may not have charged (timeout, network error, crash, result not saved). **Never treat as declined.** Lock the order and reconcile. |
 
-- `x-vanta-signature = HMAC_SHA256_HEX(sharedSecret, canonicalMessage)`
+Any Skin failure that cannot prove "not charged" answers `uncertain`, never a 4xx.
+Labs must branch on `outcome`; a missing or unknown outcome means `uncertain`.
 
-Time skew window:
+## 6) Charge
 
-- Max skew defaults to 300 seconds (`VANTA_HMAC_MAX_SKEW_SECONDS`).
-
-## 5) Charge Request/Response Contract
-
-### Request JSON (`POST /api/payments/charge`)
+### Request (`POST /api/payments/charge`)
 
 ```json
 {
-  "orderId": "labs-order-123",
+  "orderId": "order-…", "orderNumber": "VL-10042", "attemptNo": 2,
   "originStorefront": "vantalabsresearch.com",
-  "amountCents": 12995,
-  "currency": "USD",
-  "capture": true,
-  "opaqueData": {
-    "dataDescriptor": "COMMON.ACCEPT.INAPP.PAYMENT",
-    "dataValue": "<accept-js-token>"
-  },
-  "customer": {
-    "email": "buyer@example.com"
-  },
-  "lineItems": [
-    {
-      "id": "resp-kit-1",
-      "sku": "RESP-KIT-1",
-      "name": "Respiratory Research Kit",
-      "description": "Respiratory protocol kit",
-      "quantity": 1,
-      "unitPriceCents": 12995
-    }
-  ]
+  "amountCents": 4604, "currency": "USD", "capture": true,
+  "requireSandbox": true,
+  "opaqueData": { "dataDescriptor": "COMMON.ACCEPT.INAPP.PAYMENT", "dataValue": "<token>" },
+  "customer": { "email": "…", "firstName": "…", "lastName": "…", "phone": "…" },
+  "billTo": { "firstName": "…", "lastName": "…", "address": "…", "city": "…", "state": "TX", "zip": "78701", "country": "US" },
+  "shippingCents": 995, "taxCents": 0
 }
 ```
 
-Validation notes:
-- `originStorefront` must be in the Vanta Skin allowlist (`VANTA_ALLOWED_ORIGIN_STOREFRONTS`).
-- `amountCents` is authoritative (computed by the storefront from its order and signed). `lineItems` are the real goods at their own prices (positive integer `quantity`, non-negative integer `unitPriceCents`) and need not sum to `amountCents`: coupons, free items and credits are why.
-- Optional `shippingCents` and `taxCents` are validated as non-negative integers.
-- `customer` and `lineItems` are optional, are validated if present, and are **never sent to Authorize.net** (owner, 2026-10-16). Authorize.net receives only the amount, the Accept.js token, the order id as invoice number (20 characters) and the description `<AUTHNET_MERCHANT_DESCRIPTOR> | <originStorefront>`.
-- Raw card fields (PAN/CVV/etc.) are rejected; only `opaqueData` is accepted.
+Validation (400 `invalid` otherwise): `orderId` string; `amountCents` positive
+integer; `currency` exactly `"USD"`; `originStorefront` in
+`VANTA_ALLOWED_ORIGIN_STOREFRONTS`; `opaqueData.dataDescriptor`/`dataValue`
+strings; no raw card fields (`cardNumber`, `cardCode`, `cvv`, `cvc`,
+`securityCode`, `pan`); `shippingCents`/`taxCents` non-negative integers;
+`capture: false` (auth-only) is not supported; `customer`/`billTo` optional
+objects (empty fields are omitted). `lineItems` are still accepted from older
+builds, shape-checked, and **never sent**.
 
-### Success response (`200`)
+### What Authorize.Net receives (complete inventory)
 
-```json
-{
-  "ok": true,
-  "action": "charge",
-  "orderId": "labs-order-123",
-  "transactionId": "1234567890",
-  "paymentStatus": "captured",
-  "processorCode": "1",
-  "message": "This transaction has been approved.",
-  "sandbox": true,
-  "replayed": false
-}
-```
+`createTransactionRequest`:
 
-### Declined/processor-failed response (`402`)
+- `merchantAuthentication` (API login id + transaction key), `refId` (first 20 hex chars of sha256 of the idempotency key)
+- `transactionRequest`:
+  - `transactionType`: `authCaptureTransaction`
+  - `amount`: `amountCents / 100`, two decimals
+  - `payment.opaqueData`: `dataDescriptor`, `dataValue`
+  - `order.invoiceNumber`: `orderNumber` if 1–20 characters, else the first 20 characters of `orderId`
+  - `order.description`: `<AUTHNET_MERCHANT_DESCRIPTOR> | <originStorefront>` (names the originating storefront; unchanged)
+  - `tax` `{ amount, name: "Tax" }` — only when `taxCents > 0`
+  - `shipping` `{ amount, name: "Shipping" }` — only when `shippingCents > 0`
+  - `customer.email` — only when given (≤ 255)
+  - `billTo` — only the fields given: `firstName` (50), `lastName` (50), `address` (60), `city` (40), `state` (40), `zip` (20), `country` (60), `phoneNumber` (25, from `customer.phone`)
+  - `transactionSettings.setting`: `duplicateWindow = 120`
 
-```json
-{
-  "ok": false,
-  "action": "charge",
-  "orderId": "labs-order-123",
-  "transactionId": null,
-  "paymentStatus": "declined",
-  "processorCode": "2",
-  "message": "Card declined",
-  "sandbox": true,
-  "replayed": false
-}
-```
+Never sent: line items, product names, SKUs, customer IP, shipping address.
+(The SDK itself adds `clientId` = its version string.)
 
-### Validation/auth errors (`4xx`)
-
-```json
-{ "ok": false, "error": "..." }
-```
-
-## 6) Refund Request/Response Contract
-
-### Request JSON (`POST /api/payments/refund`)
-
-```json
-{
-  "orderId": "labs-order-123",
-  "originStorefront": "vantalabsresearch.com",
-  "transactionId": "1234567890",
-  "amountCents": 12995,
-  "currency": "USD",
-  "cardNumberMasked": "1111",
-  "expirationDate": "XXXX"
-}
-```
-
-`cardNumberMasked` must be either:
-- last 4 digits (example: `1111`), or
-- `XXXX####` format (example: `XXXX1111`)
+The gateway call has its own timeout (`AUTHNET_TIMEOUT_MS`, default 20000).
+A timeout is `uncertain`, never a decline.
 
 ### Response
 
-- `200` when refund succeeds with `paymentStatus: "refunded"`
-- `402` when refund fails with `paymentStatus: "refund_failed"`
-
-## 7) Void Request/Response Contract
-
-### Request JSON (`POST /api/payments/void`)
-
 ```json
 {
-  "orderId": "labs-order-123",
-  "originStorefront": "vantalabsresearch.com",
-  "transactionId": "1234567890",
-  "amountCents": 12995,
-  "currency": "USD"
+  "ok": true, "action": "charge", "orderId": "order-…",
+  "outcome": "captured", "paymentStatus": "captured",
+  "retryable": false, "gatewayContacted": true,
+  "transactionId": "60212345678", "refId": "<20 chars>", "invoiceNumber": "VL-10042",
+  "authCode": "ABC123", "cardLast4": "1111", "cardType": "Visa",
+  "amountCents": 4604, "currency": "USD", "sandbox": true,
+  "processorCode": "1", "message": "<processor text, internal>",
+  "customerMessage": null, "replayed": false
 }
 ```
 
-### Response
+- `paymentStatus` (older builds): `captured | declined | rejected | held | uncertain`.
+- `customerMessage` examples: declined → "Your card was declined. Please check the details or use a different card."; rejected → "We couldn't process this card. No payment was taken."; uncertain → "We're confirming your payment with the bank. Please don't pay again."
+- If the result was `captured`/`held` but Skin could not save it, the answer is `502 uncertain` **with** `transactionId` — reconcile.
+- Refusals before the gateway use the same shape with `gatewayContacted: false` and `transactionId: null`.
 
-- `200` when void succeeds with `paymentStatus: "voided"`
-- `402` when void fails with `paymentStatus: "void_failed"`
+## 7) Refund and void
 
-## 8) Browser Tokenization Requirements (Vanta Labs checkout)
-
-Card data must be tokenized by Authorize.net Accept.js before backend charge call.
-
-Expected token payload:
+### Refund (`POST /api/payments/refund`)
 
 ```json
-{
-  "opaqueData": {
-    "dataDescriptor": "...",
-    "dataValue": "..."
-  }
-}
+{ "orderId": "…", "originStorefront": "vantalabsresearch.com", "transactionId": "<charge transId>",
+  "amountCents": 1500, "currency": "USD", "cardNumberMasked": "1111" }
 ```
 
-Never send raw PAN/CVV to Vanta Labs backend or Vanta Skin backend.
+`cardNumberMasked` is required: the card's last 4 digits (`"1111"`, or `"XXXX1111"`). Missing or anything else → 400 `invalid`; there is no default. Currency, if sent, must be `USD`.
 
-## 9) Supabase Integration Requirements
+Authorize.Net receives: `refId`, `transactionType: refundTransaction`, `amount`, `payment.creditCard { cardNumber: "XXXX1111", expirationDate: "XXXX" }`, `refTransId`.
 
-### On Vanta Skin side (already implemented)
-
-- `payment_request_replays`: nonce replay lock
-- `payment_idempotency`: request hash + stored response
-- `payment_events`: transaction audit trail (includes origin storefront + payloads)
-- `authnet_webhook_events`: webhook event ledger
-  - includes `transaction_id`, `reconciled_order_id`, and `reconciled_status` for reconciliation traceability
-- `payment_order_sync_events`: outbound callback outbox with delivery status, attempts, and errors
-
-### For Vanta Labs side
-
-When calling `charge/refund/void`, store and update in Labs DB:
-
-- internal order id
-- amount/currency sent
-- idempotency key used
-- returned `transactionId`
-- returned `paymentStatus`
-- raw bridge response body
-
-On successful charge, update Labs order state to paid and continue existing fulfillment/email flow.
-
-## 10) Vanta Skin → Vanta Labs callback contract (for reliable synchronization)
-
-Vanta Skin sends payment status callbacks to `VANTA_LABS_SYNC_ENDPOINT_URL` (if configured).  
-This is how webhook updates/refunds/voids are propagated back to Labs without making Vanta Skin an order system.
-
-### Callback headers
-
-- `content-type: application/json`
-- `x-vanta-key-id`
-- `x-vanta-timestamp`
-- `x-vanta-nonce`
-- `x-vanta-signature` (same canonical HMAC format)
-- `x-idempotency-key` (set to callback `eventId`)
-
-### Callback payload
+### Void (`POST /api/payments/void`)
 
 ```json
-{
-  "eventId": "bridge:charge:idem-123:labs-order-123:1234567890:captured",
-  "source": "vanta-skin-payment-bridge",
-  "action": "charge",
-  "orderId": "labs-order-123",
-  "originStorefront": "vantalabsresearch.com",
-  "amountCents": 12995,
-  "currency": "USD",
-  "transactionId": "1234567890",
-  "paymentStatus": "captured",
-  "processorCode": "1",
-  "message": "This transaction has been approved.",
-  "sandbox": true,
-  "occurredAt": "2026-10-16T00:00:00.000Z"
-}
+{ "orderId": "…", "originStorefront": "vantalabsresearch.com", "transactionId": "<charge transId>", "amountCents": 4604 }
 ```
 
-### Labs-side callback handling requirements
+`amountCents` is optional when Skin recorded the charge (its amount is used); otherwise 400.
+Authorize.Net receives: `refId`, `transactionType: voidTransaction`, `refTransId`.
 
-- Treat `eventId` as globally unique and idempotent.
-- Keep a processed-events table keyed by `eventId`.
-- If `eventId` already processed, return `200` and do nothing.
-- Only Labs updates order paid/refund/void state and triggers fulfillment/email workflows.
+### Response (both)
 
-### Retry behavior
+Same idempotency and outcome→HTTP mapping as charges. Body:
+`ok, action, orderId, outcome, paymentStatus, retryable, gatewayContacted, transactionId, originalTransactionId, refId, amountCents, currency, sandbox, processorCode, message, customerMessage (null), replayed`.
 
-- Vanta Skin records callback attempts in `payment_order_sync_events`.
-- Failed deliveries remain pending/failed for retry.
-- Ops can call `POST /api/payments/sync-retry` on Vanta Skin with:
-  - header: `x-sync-retry-token: <VANTA_SYNC_RETRY_TOKEN>`
+- `transactionId` = the **new** refund transaction id (void: the voided id); `originalTransactionId` = the charge's id.
+- `paymentStatus`: refund `refunded | refund_failed | refund_held | refund_uncertain`; void `voided | void_failed | void_held | void_uncertain`.
 
-## 11) Sandbox Rollout Sequence
+## 8) Reconcile (new; no money moves)
 
-1. Keep all environments in sandbox mode.
-2. Configure shared HMAC key/secret pair in both services.
-3. Implement signing in Labs backend exactly as specified.
-4. Tokenize in browser with Accept.js and send opaqueData to Labs backend.
-5. Labs backend calls `/api/payments/charge` with headers + idempotency key.
-6. Validate order/amount consistency in Labs before bridge call.
-7. Run retries to verify idempotency behavior and nonce replay rejection.
-8. Verify webhook events, callback deliveries, and retry behavior in Supabase.
+`POST /api/payments/reconcile`, signed like the others (nonce stored, no idempotency key needed).
 
-## 12) Security/Compliance Notes
+```json
+{ "orderId": "…", "idempotencyKey": "vskin:charge:<orderId>:<n>", "invoiceNumber": "VL-10042",
+  "amountCents": 4604, "attemptStartedAt": "2026-10-16T12:00:00.000Z", "knownTransactionIds": ["…"] }
+```
 
-- Keep processor and Supabase secrets server-side only.
-- Do not falsify product descriptions, storefront source, or order metadata.
-- Preserve `originStorefront` and line-item visibility for processor/audit requirements.
-- Do not switch to live processing until written approval and production sign-off.
+Response `200`:
 
-## 13) Environment Variables (Vanta Skin)
+```json
+{ "ok": true, "orderId": "…", "outcome": "captured", "transactionId": "…", "cardLast4": "1111",
+  "cardType": "Visa", "amountCents": 4604, "source": "skin_record" }
+```
 
-Required:
-- `AUTHNET_API_LOGIN_ID`
-- `AUTHNET_TRANSACTION_KEY`
-- `AUTHNET_CLIENT_KEY`
-- `SUPABASE_URL`
-- `SUPABASE_SERVICE_ROLE_KEY`
-- One of:
-  - `VANTA_HMAC_KEY_ID` + `VANTA_HMAC_SHARED_SECRET`
-  - `VANTA_HMAC_KEYS_JSON`
+1. Skin's own records first (the idempotency row, then the charge audit row) → `source: "skin_record"`.
+2. Otherwise Authorize.Net: the unsettled list, then batches settled in the last 2 days, for a transaction with the same `invoiceNumber` and amount, submitted at/after `attemptStartedAt` (60 s clock tolerance), not in `knownTransactionIds`; details are fetched for the card. → `source: "gateway_lookup"`. Several matches: captured wins over held, declined, rejected.
+3. `not_found` only when the lookups completed without error and the attempt is ≥ 30 minutes old (measured from the later of `attemptStartedAt` and Skin's claim). Otherwise `pending`.
 
-Recommended:
-- `AUTHNET_SIGNATURE_KEY` (for webhook signature verification)
+Gateway statuses: `capturedPendingSettlement`/`settledSuccessfully` → captured; `declined`/`failedReview` → declined; `generalError`/`communicationError`/`expired`/`voided` → rejected; review and unknown statuses → held.
+The lookups need Authorize.Net's Transaction Details API enabled on the merchant account.
 
-Sandbox / policy controls:
-- `AUTHNET_SANDBOX=true`
-- `VANTA_ALLOWED_ORIGIN_STOREFRONTS=vantalabsresearch.com`
+## 9) Skin → Labs callback (`VANTA_LABS_SYNC_ENDPOINT_URL`)
 
-Sync callback controls:
-- `VANTA_LABS_SYNC_ENDPOINT_URL`
-- `VANTA_LABS_SYNC_KEY_ID`
-- `VANTA_LABS_SYNC_SHARED_SECRET`
-- `VANTA_LABS_PROTECTION_BYPASS` (Labs project's Vercel automation-bypass secret; previews only)
-- `VANTA_SYNC_RETRY_TOKEN`
+Headers: the same HMAC scheme with the callback key, `x-idempotency-key` = `eventId`.
+
+### Charge result (sent for captured / declined / rejected / held; not for uncertain)
+
+```json
+{ "eventId": "bridge:charge:<idempotencyKey>:<transId|none>:<outcome>", "source": "vanta-skin-payment-bridge",
+  "action": "charge", "attemptKey": "vskin:charge:<orderId>:<n>", "orderId": "…", "originStorefront": "…",
+  "outcome": "captured", "paymentStatus": "captured", "transactionId": "…",
+  "amountCents": 4604, "currency": "USD", "cardLast4": "1111", "cardType": "Visa",
+  "sandbox": true, "processorCode": "1", "message": "…", "occurredAt": "…" }
+```
+
+### Refund / void result
+
+`action: "refund" | "void"`, `eventId: bridge:<action>:<key>:<transId|none>:<outcome>`,
+`transactionId` = new refund id (void: the voided id), `originalTransactionId` = charge id,
+`amountCents` = refunded amount (void: the original amount), `paymentStatus` as in §7.
+
+### Authorize.Net-webhook update
+
+`action: "webhook_update"`, `eventId: webhook:<notificationId>`, `outcome: "captured"`,
+`paymentStatus: "paid" | "refunded" | "voided"`, `amountCents` = the gateway's verified amount,
+`transactionId`, `originalTransactionId` (refund/void), `attemptKey`, `cardLast4`, `cardType`, `webhookEventType`.
+Forwarded only when verified (§10).
+
+### Labs responses and Skin's retries
+
+- `2xx` = processed (or already processed) → `delivered`.
+- `422` = permanently rejected → `dead` immediately, no more retries.
+- anything else (409, 5xx, timeout, redirect) → `failed`, retried with backoff 1m, 2m, 4m … capped at 6h; after 15 attempts → `dead` with the last error.
+
+The inline callback is sent only after the charge result is saved, with a short
+timeout (`VANTA_LABS_SYNC_TIMEOUT_MS`, default 4000). Its failure never changes
+the charge response. `POST /api/payments/sync-retry` (header
+`x-sync-retry-token`) delivers due rows (`next_attempt_at <= now`) oldest first;
+run it from a cron.
+
+## 10) Authorize.Net webhook handling
+
+- `X-ANET-Signature` must verify (fails closed when `AUTHNET_SIGNATURE_KEY` is unset) → else 401.
+- Every verified notification is recorded once in `authnet_webhook_events` (key: `notificationId`, or `sha256-<hash of body>` when absent) with a `verification` reason.
+- An event name alone never makes anything paid. `authcapture.created` / `capture.created` are forwarded only when the transaction id matches a Skin charge row whose outcome is captured, `payload.responseCode == 1`, and `authAmount` (or `settleAmount`) equals the recorded amount. `refund.created` / `void.created` must match a recorded refund / void row the same way.
+- Everything else is recorded and not forwarded.
+
+## 11) Supabase (Skin side)
+
+- `payment_request_replays` — nonce replay lock
+- `payment_idempotency` — `status` (`in_progress | completed | uncertain`), request hash, stored response
+- `payment_events` — audit trail incl. `outcome`, `card_last4`, `card_type`, `ref_id`, `idempotency_key`, `auth_amount_cents`, `original_transaction_id`; one charge row per attempt key
+- `authnet_webhook_events` — webhook ledger incl. `verification`
+- `payment_order_sync_events` — callback outbox incl. `next_attempt_at` and `dead`
+
+Apply `supabase/migrations/20261017000000_payment_reliability.sql` **before**
+deploying this code (the code fails closed — 503, not charged — without it).
+Manual reverse steps: `supabase/migrations/ROLLBACK-20261017000000_payment_reliability.sql`.
+`anon` and `authenticated` have no privileges on the payment tables.
+
+## 12) Security / compliance
+
+- Processor and Supabase secrets stay server-side. The Accept.js token is never logged or stored (`[redacted]` in audit rows).
+- Do not falsify product descriptions, storefront source, or order metadata. The Authorize.Net description names the originating storefront.
+- Do not switch to live processing until written approval and production sign-off (and then via the three variables in §1).
+
+## 13) Environment variables (Vanta Skin)
+
+Required: `AUTHNET_API_LOGIN_ID`, `AUTHNET_TRANSACTION_KEY`, `AUTHNET_CLIENT_KEY`,
+`SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, and `VANTA_HMAC_KEY_ID` +
+`VANTA_HMAC_SHARED_SECRET` (or `VANTA_HMAC_KEYS_JSON`).
+
+Mode: `AUTHNET_SANDBOX`, `AUTHNET_LIVE_APPROVED`, `VERCEL_ENV` (see §1).
+
+Optional: `AUTHNET_SIGNATURE_KEY` (webhooks), `AUTHNET_MERCHANT_DESCRIPTOR`,
+`AUTHNET_TIMEOUT_MS` (20000), `VANTA_HMAC_MAX_SKEW_SECONDS` (300),
+`VANTA_ALLOWED_ORIGIN_STOREFRONTS` (`vantalabsresearch.com`).
+
+Callbacks: `VANTA_LABS_SYNC_ENDPOINT_URL`, `VANTA_LABS_SYNC_KEY_ID`,
+`VANTA_LABS_SYNC_SHARED_SECRET`, `VANTA_LABS_SYNC_TIMEOUT_MS` (4000),
+`VANTA_LABS_PROTECTION_BYPASS` (previews only), `VANTA_SYNC_RETRY_TOKEN`,
+`VANTA_SYNC_RETRY_BATCH_SIZE` (25).
 
 ## Health check (no money moves)
 
-`GET /api/payments/health`, signed exactly like the payment calls (same headers,
-canonical message over an empty body). A `200` proves the caller's bridge secret
-matches `VANTA_HMAC_SHARED_SECRET`; `401` means it does not.
+`GET /api/payments/health`, signed exactly like the payment calls (canonical
+message over an empty body). `200` proves the bridge secret matches; `401` means
+it does not. The body reports `sandbox` and `authnetMode`
+(`sandbox | live | misconfigured`).
 
 `GET /api/payments/health?callback=1` also sends Labs a signed
-`{ "type": "ping", "eventId": "ping:<uuid>", "challenge": "<hex>", "sandbox": <bool> }`
-to `VANTA_LABS_SYNC_ENDPOINT_URL`. Labs answers `{ "pong": "<challenge>" }` only
-after verifying the signature, so `checks.labsCallback = "verified"` proves both
-copies of `VANTA_LABS_SYNC_SHARED_SECRET` match.
-
-The response contains states only (`present`/`missing`, `reachable`/`error:<code>`,
-`verified`/`failed:<status>`), never configuration values. Nonces are not stored;
-nothing is written.
+`{ "type": "ping", "eventId": "ping:<uuid>", "challenge": "<hex>", "sandbox": <bool> }`;
+Labs answers `{ "pong": "<challenge>" }` only after verifying the signature, so
+`checks.labsCallback = "verified"` proves both copies of
+`VANTA_LABS_SYNC_SHARED_SECRET` match. The response contains states only, never
+configuration values. Nonces are not stored; nothing is written.

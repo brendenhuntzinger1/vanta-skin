@@ -1,5 +1,5 @@
 const { randomBytes, randomUUID } = require('node:crypto');
-const { envBool, loadHmacSecrets, loadLabsSyncConfig, optionalNumber } = require('./config');
+const { hmacMaxSkewSeconds, loadHmacSecrets, loadLabsSyncConfig, resolveAuthnetMode } = require('./config');
 const { verifyRequestSignature } = require('./security');
 const { signedLabsPost } = require('./sync');
 
@@ -60,15 +60,18 @@ async function runHealthCheck(req, { probeDatabase: probe = probeDatabase, postT
 
   try {
     verifyRequestSignature(
-      { hmac: { secrets, maxSkewSeconds: optionalNumber('VANTA_HMAC_MAX_SKEW_SECONDS', 300) } },
+      { hmac: { secrets, maxSkewSeconds: hmacMaxSkewSeconds() } },
       req,
       '',
     );
-  } catch (error) {
-    return { statusCode: 401, body: { ok: false, error: error.message } };
+  } catch {
+    return { statusCode: 401, body: { ok: false, error: 'Invalid or missing bridge signature' } };
   }
 
-  const sandbox = envBool('AUTHNET_SANDBOX', true);
+  // Same strict rule the payment endpoints use: live only with
+  // AUTHNET_SANDBOX=false, AUTHNET_LIVE_APPROVED=true and VERCEL_ENV=production.
+  const authnetMode = resolveAuthnetMode(process.env);
+  const sandbox = authnetMode.sandbox;
   let database = 'not_configured';
   if (hasEnv('SUPABASE_URL') && hasEnv('SUPABASE_SERVICE_ROLE_KEY')) {
     try {
@@ -90,6 +93,7 @@ async function runHealthCheck(req, { probeDatabase: probe = probeDatabase, postT
       ok: true,
       service: 'vanta-skin-payment-service',
       sandbox,
+      authnetMode: authnetMode.mode,
       checks: {
         bridgeSignature: 'verified',
         authnetCredentials: hasEnv('AUTHNET_API_LOGIN_ID') && hasEnv('AUTHNET_TRANSACTION_KEY') ? 'present' : 'missing',
