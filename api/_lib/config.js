@@ -39,6 +39,22 @@ function optionalNumber(name, fallback) {
   return parsed;
 }
 
+// Callback settings, read without requiring the rest of the payment config so
+// the health check can report on them before the database exists.
+function loadLabsSyncConfig() {
+  return {
+    endpointUrl: optional('VANTA_LABS_SYNC_ENDPOINT_URL', ''),
+    outboundKeyId: optional('VANTA_LABS_SYNC_KEY_ID', ''),
+    outboundSharedSecret: optional('VANTA_LABS_SYNC_SHARED_SECRET', ''),
+    timeoutMs: optionalNumber('VANTA_LABS_SYNC_TIMEOUT_MS', 8000),
+    retryAuthToken: optional('VANTA_SYNC_RETRY_TOKEN', ''),
+    retryBatchSize: optionalNumber('VANTA_SYNC_RETRY_BATCH_SIZE', 25),
+    // Vanta Labs project's "Protection Bypass for Automation" secret, needed
+    // only while Labs is behind Vercel Deployment Protection (its previews).
+    protectionBypass: optional('VANTA_LABS_PROTECTION_BYPASS', '').trim(),
+  };
+}
+
 function loadConfig() {
   const hmacSecrets = loadHmacSecrets();
   if (!Object.keys(hmacSecrets).length) {
@@ -68,17 +84,14 @@ function loadConfig() {
       url: required('SUPABASE_URL'),
       serviceRoleKey: required('SUPABASE_SERVICE_ROLE_KEY'),
     },
-    labsSync: {
-      endpointUrl: optional('VANTA_LABS_SYNC_ENDPOINT_URL', ''),
-      outboundKeyId: optional('VANTA_LABS_SYNC_KEY_ID', ''),
-      outboundSharedSecret: optional('VANTA_LABS_SYNC_SHARED_SECRET', ''),
-      timeoutMs: optionalNumber('VANTA_LABS_SYNC_TIMEOUT_MS', 8000),
-      retryAuthToken: optional('VANTA_SYNC_RETRY_TOKEN', ''),
-      retryBatchSize: optionalNumber('VANTA_SYNC_RETRY_BATCH_SIZE', 25),
-    },
+    labsSync: loadLabsSyncConfig(),
   };
 }
 
 module.exports = {
+  envBool,
   loadConfig,
+  loadHmacSecrets,
+  loadLabsSyncConfig,
+  optionalNumber,
 };

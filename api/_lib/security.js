@@ -67,8 +67,9 @@ function verifyRequestSignature(config, req, rawBody) {
 }
 
 function verifyWebhookSignature(signatureKey, payload, headerValue) {
-  if (!signatureKey) return true;
-  if (!headerValue) return false;
+  // Fail closed: with no signature key there is nothing to prove a webhook
+  // came from Authorize.net, so none is accepted.
+  if (!signatureKey || !headerValue) return false;
 
   const normalizedKey = /^[A-Fa-f0-9]+$/.test(signatureKey) && signatureKey.length % 2 === 0
     ? Buffer.from(signatureKey, 'hex')

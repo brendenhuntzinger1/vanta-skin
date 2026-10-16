@@ -1,9 +1,10 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const {
-  assertChargeLineItemsAmount,
+  assertChargeLineItems,
   assertNoSensitiveCardFields,
   mapWebhookEventToOrderStatus,
+  redactPaymentPayload,
 } = require('../api/_lib/service');
 const { normalizeRefundCardReference } = require('../api/_lib/authnet');
 
@@ -15,27 +16,38 @@ test('assertNoSensitiveCardFields rejects raw card fields', () => {
   assert.doesNotThrow(() => assertNoSensitiveCardFields({ opaqueData: { dataValue: 'tok' } }));
 });
 
-test('assertChargeLineItemsAmount validates line item sum', () => {
-  assert.doesNotThrow(() => {
-    assertChargeLineItemsAmount({
-      amountCents: 300,
-      lineItems: [
-        { quantity: 1, unitPriceCents: 100 },
-        { quantity: 2, unitPriceCents: 100 },
-      ],
-    });
-  });
+// amountCents is the authoritative charge: the originating storefront computes
+// it from the order and signs it. Line items list the real goods at their own
+// prices; coupons, free items and credits mean they need not add up to it.
+test('assertChargeLineItems accepts real line items that do not sum to the total', () => {
+  assert.doesNotThrow(() => assertChargeLineItems({
+    amountCents: 9_995,
+    lineItems: [{ name: 'Item', quantity: 2, unitPriceCents: 4_500 }, { name: 'Free item', quantity: 1, unitPriceCents: 0 }],
+  }));
+  assert.doesNotThrow(() => assertChargeLineItems({ amountCents: 100 }));
+});
 
-  assert.throws(
-    () => assertChargeLineItemsAmount({
-      amountCents: 301,
-      lineItems: [
-        { quantity: 1, unitPriceCents: 100 },
-        { quantity: 2, unitPriceCents: 100 },
-      ],
-    }),
-    /does not match amountCents/,
-  );
+test('assertChargeLineItems rejects malformed line items', () => {
+  for (const bad of [
+    { quantity: 0, unitPriceCents: 100 },
+    { quantity: 1.5, unitPriceCents: 100 },
+    { quantity: 1, unitPriceCents: -1 },
+    { quantity: 1, unitPriceCents: 10.5 },
+  ]) {
+    assert.throws(() => assertChargeLineItems({ amountCents: 100, lineItems: [bad] }), /lineItems/);
+  }
+  assert.throws(() => assertChargeLineItems({ amountCents: 100, lineItems: 'x' }), /lineItems/);
+  assert.throws(() => assertChargeLineItems({ amountCents: 100, shippingCents: -5 }), /shippingCents/);
+  assert.throws(() => assertChargeLineItems({ amountCents: 100, taxCents: 1.5 }), /taxCents/);
+});
+
+// The Accept.js nonce is single-use and expires, but it is still a payment
+// credential: it is not kept in payment_events.request_payload.
+test('redactPaymentPayload drops opaqueData.dataValue and keeps the rest', () => {
+  const payload = { orderId: 'o', opaqueData: { dataDescriptor: 'COMMON.ACCEPT.INAPP.PAYMENT', dataValue: 'secret-token' } };
+  const redacted = redactPaymentPayload(payload);
+  assert.deepEqual(redacted, { orderId: 'o', opaqueData: { dataDescriptor: 'COMMON.ACCEPT.INAPP.PAYMENT', dataValue: '[redacted]' } });
+  assert.equal(payload.opaqueData.dataValue, 'secret-token');
 });
 
 test('mapWebhookEventToOrderStatus maps known event types', () => {

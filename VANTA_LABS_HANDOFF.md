@@ -98,7 +98,8 @@ Time skew window:
 
 Validation notes:
 - `originStorefront` must be in the Vanta Skin allowlist (`VANTA_ALLOWED_ORIGIN_STOREFRONTS`).
-- If `lineItems` are present, summed `quantity * unitPriceCents` must equal `amountCents`.
+- `amountCents` is authoritative (computed by the storefront from its order and signed). `lineItems` are the real goods at their own prices (positive integer `quantity`, non-negative integer `unitPriceCents`) and need not sum to `amountCents`: coupons, free items and credits are why.
+- Optional `shippingCents` and `taxCents` are validated as non-negative integers. The Authorize.net transaction fields (invoice number, description, line items) are unchanged pending review of the written merchant approval.
 - Raw card fields (PAN/CVV/etc.) are rejected; only `opaqueData` is accepted.
 
 ### Success response (`200`)
@@ -313,4 +314,21 @@ Sync callback controls:
 - `VANTA_LABS_SYNC_ENDPOINT_URL`
 - `VANTA_LABS_SYNC_KEY_ID`
 - `VANTA_LABS_SYNC_SHARED_SECRET`
+- `VANTA_LABS_PROTECTION_BYPASS` (Labs project's Vercel automation-bypass secret; previews only)
 - `VANTA_SYNC_RETRY_TOKEN`
+
+## Health check (no money moves)
+
+`GET /api/payments/health`, signed exactly like the payment calls (same headers,
+canonical message over an empty body). A `200` proves the caller's bridge secret
+matches `VANTA_HMAC_SHARED_SECRET`; `401` means it does not.
+
+`GET /api/payments/health?callback=1` also sends Labs a signed
+`{ "type": "ping", "eventId": "ping:<uuid>", "challenge": "<hex>", "sandbox": <bool> }`
+to `VANTA_LABS_SYNC_ENDPOINT_URL`. Labs answers `{ "pong": "<challenge>" }` only
+after verifying the signature, so `checks.labsCallback = "verified"` proves both
+copies of `VANTA_LABS_SYNC_SHARED_SECRET` match.
+
+The response contains states only (`present`/`missing`, `reachable`/`error:<code>`,
+`verified`/`failed:<status>`), never configuration values. Nonces are not stored;
+nothing is written.
