@@ -26,6 +26,7 @@ const DUPLICATE_WINDOW_SECONDS = 120;
 
 // The only storefront domain Authorize.Net ever sees in order.description.
 const STOREFRONT_DOMAIN = 'vanta.skin';
+const INVOICE_PREFIX = 'VS-';
 
 class GatewayTimeoutError extends Error {
   constructor(timeoutMs) {
@@ -76,13 +77,10 @@ function refIdFor(idempotencyKey) {
   return createHash('sha256').update(String(idempotencyKey || ''), 'utf8').digest('hex').slice(0, LIMITS.refId);
 }
 
-// The storefront's order number when it fits Authorize.Net's 20 characters,
-// else the first 20 characters of the order id. Labs computes the same value
-// for reconciliation, so it must stay deterministic.
+// Deterministic and Skin-branded: Labs' orderNumber and orderId are never sent to Authorize.Net.
 function invoiceNumberFor(payload) {
-  const orderNumber = typeof payload?.orderNumber === 'string' ? payload.orderNumber.trim() : '';
-  if (orderNumber && orderNumber.length <= LIMITS.invoiceNumber) return orderNumber;
-  return String(payload?.orderId || '').slice(0, LIMITS.invoiceNumber);
+  const digest = createHash('sha256').update(String(payload?.orderId || ''), 'utf8').digest('hex').toUpperCase();
+  return `${INVOICE_PREFIX}${digest}`.slice(0, LIMITS.invoiceNumber);
 }
 
 function normalizeRefundCardReference(value) {

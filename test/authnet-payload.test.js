@@ -95,11 +95,14 @@ test('charge request: refId is the first 20 hex chars of sha256(idempotency key)
   assert.equal(viaKey.refId, request.refId);
 });
 
-test('charge request: invoice number is orderNumber (≤20) else orderId[0..20]', () => {
-  assert.equal(build(fullPayload()).transactionRequest.order.invoiceNumber, 'VL-10042');
-  assert.equal(build(fullPayload({ orderNumber: undefined })).transactionRequest.order.invoiceNumber, 'order-2f5da385-b1b1-');
-  assert.equal(build(fullPayload({ orderNumber: 'X'.repeat(21) })).transactionRequest.order.invoiceNumber, 'order-2f5da385-b1b1-');
-  assert.equal(invoiceNumberFor({ orderId: 'order-abc', orderNumber: '' }), 'order-abc');
+test('charge request: invoice number is VS-<hash of orderId>, never Labs orderNumber or orderId', () => {
+  const invoice = build(fullPayload()).transactionRequest.order.invoiceNumber;
+  assert.match(invoice, /^VS-[0-9A-F]{17}$/);
+  assert.equal(invoice, invoiceNumberFor({ orderId: fullPayload().orderId }));
+  assert.equal(build(fullPayload({ orderNumber: undefined })).transactionRequest.order.invoiceNumber, invoice);
+  assert.equal(build(fullPayload({ orderNumber: 'X'.repeat(21) })).transactionRequest.order.invoiceNumber, invoice);
+  assert.equal(invoice.includes('VL-'), false);
+  assert.notEqual(invoiceNumberFor({ orderId: 'order-abc' }), invoice);
 });
 
 test('charge request: minimal payload sends only the required fields', () => {

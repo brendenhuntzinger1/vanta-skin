@@ -66,7 +66,7 @@ authentication provider. Nothing is sent for it.
 ### What Authorize.net receives
 
 Charge: `refId` (sha256 of the idempotency key, 20 chars), `authCaptureTransaction`,
-amount, `opaqueData`, `order.invoiceNumber` (order number, else order id, 20
+amount, `opaqueData`, `order.invoiceNumber` (`VS-` + hash of the order id, 20
 chars), `order.description` (`<AUTHNET_MERCHANT_DESCRIPTOR> | vanta.skin`),
 tax and shipping amounts when > 0, `customer.email` when given, `billTo` (name,
 address, city, state, zip, country, phone) when given, truncated to

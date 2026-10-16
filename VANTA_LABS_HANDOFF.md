@@ -115,7 +115,7 @@ builds, shape-checked, and **never sent**.
   - `transactionType`: `authCaptureTransaction`
   - `amount`: `amountCents / 100`, two decimals
   - `payment.opaqueData`: `dataDescriptor`, `dataValue`
-  - `order.invoiceNumber`: `orderNumber` if 1–20 characters, else the first 20 characters of `orderId`
+  - `order.invoiceNumber`: `VS-` + first 17 uppercase hex chars of sha256(`orderId`) (20 chars). `orderNumber` and `orderId` are never sent. Labs matches on the returned `invoiceNumber` / `transactionId`.
   - `order.description`: `<AUTHNET_MERCHANT_DESCRIPTOR> | vanta.skin` (always names vanta.skin; the originating storefront is never sent)
   - `tax` `{ amount, name: "Tax" }` — only when `taxCents > 0`
   - `shipping` `{ amount, name: "Shipping" }` — only when `shippingCents > 0`
@@ -136,7 +136,7 @@ A timeout is `uncertain`, never a decline.
   "ok": true, "action": "charge", "orderId": "order-…",
   "outcome": "captured", "paymentStatus": "captured",
   "retryable": false, "gatewayContacted": true,
-  "transactionId": "60212345678", "refId": "<20 chars>", "invoiceNumber": "VL-10042",
+  "transactionId": "60212345678", "refId": "<20 chars>", "invoiceNumber": "VS-<17 hex>",
   "authCode": "ABC123", "cardLast4": "1111", "cardType": "Visa",
   "amountCents": 4604, "currency": "USD", "sandbox": true,
   "processorCode": "1", "message": "<processor text, internal>",
@@ -184,7 +184,7 @@ Same idempotency and outcome→HTTP mapping as charges. Body:
 `POST /api/payments/reconcile`, signed like the others (nonce stored, no idempotency key needed).
 
 ```json
-{ "orderId": "…", "idempotencyKey": "vskin:charge:<orderId>:<n>", "invoiceNumber": "VL-10042",
+{ "orderId": "…", "idempotencyKey": "vskin:charge:<orderId>:<n>", "invoiceNumber": "VS-<17 hex>",
   "amountCents": 4604, "attemptStartedAt": "2026-10-16T12:00:00.000Z", "knownTransactionIds": ["…"] }
 ```
 
