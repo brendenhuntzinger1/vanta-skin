@@ -35,7 +35,7 @@ tests in `test/`.
 | POST | `/api/payments/webhook` | Authorize.Net only | no |
 | GET | `/api/payments/tokenize-config` | browser | no |
 | GET | `/api/payments/health` | Labs / ops (signed) | no |
-| POST | `/api/payments/sync-retry` | ops / cron (`x-sync-retry-token`) | no |
+| POST / GET | `/api/payments/sync-retry` | ops (`x-sync-retry-token`) / Vercel Cron every 10 min (`Authorization: Bearer $CRON_SECRET`, `vercel.json`) | no |
 
 ## 3) Required headers (Labs backend → Skin)
 
@@ -111,8 +111,11 @@ objects (empty fields are omitted). `lineItems` are shape-checked and sent to
 the processor (the real goods at their own prices). `paymentSession` (the raw
 token from §14) is optional; when present it is validated — exact
 order/amount/storefront match, unexpired, unused — and consumed atomically
-before the gateway call. When `VANTA_REQUIRE_PAYMENT_SESSION=true`, charges
-without it are refused (400 `invalid`).
+before the gateway call. Charges without it are refused (400 `invalid`)
+unless `VANTA_REQUIRE_PAYMENT_SESSION=false` (it defaults to required). A
+session refusal (expired, spent, order/amount drift) is answered before the
+gateway with `retryable: true, reason: "payment_session"`: nothing was charged
+and Labs opens a fresh session and card frame.
 
 ### What Authorize.Net receives (complete inventory)
 
@@ -274,7 +277,7 @@ Forwarded only when verified (§10).
 The inline callback is sent only after the charge result is saved, with a short
 timeout (`VANTA_LABS_SYNC_TIMEOUT_MS`, default 4000). Its failure never changes
 the charge response. `POST /api/payments/sync-retry` (header
-`x-sync-retry-token`) delivers due rows (`next_attempt_at <= now`) oldest first;
+`x-sync-retry-token`), or the scheduled `GET` from Vercel Cron (`CRON_SECRET`), delivers due rows (`next_attempt_at <= now`) oldest first;
 run it from a cron.
 
 ## 10) Authorize.Net webhook handling

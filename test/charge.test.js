@@ -560,6 +560,28 @@ test('an expired session is rejected before the gateway is touched', async () =>
   assert.equal(ctx.gateway.calls.length, 0);
 });
 
+// Nothing was charged, and a new session lets the shopper pay: the answer says
+// so (retryable, reason payment_session), or Labs leaves them at a dead end.
+test('a session refusal (expired, spent, drifted) says nothing was charged and a new session may be opened', async () => {
+  for (const row of [
+    sessionRow({ expires_at: new Date(Date.now() - 1000).toISOString() }),
+    sessionRow({ consumed_at: new Date().toISOString() }),
+    sessionRow({ amount_cents: 1 }),
+  ]) {
+    const ctx = setupWithSession({ row });
+    const res = await charge(ctx, { body: chargeBody({ paymentSession: SESSION_TOKEN }) });
+    assert.equal(res.body.gatewayContacted, false);
+    assert.equal(res.body.retryable, true);
+    assert.equal(res.body.reason, 'payment_session');
+    assert.equal(ctx.gateway.calls.length, 0);
+  }
+});
+
+test('other refusals carry no payment_session reason', async () => {
+  const res = await charge(setup(), { body: chargeBody({ paymentSession: 'not-a-token' }) });
+  assert.equal(res.body.reason, undefined);
+});
+
 test('a malformed paymentSession is rejected as invalid', async () => {
   const res = await charge(setup(), { body: chargeBody({ paymentSession: 'not-a-token' }) });
   assert.equal(res.statusCode, 400);

@@ -78,12 +78,13 @@ const REVERSAL_PAYMENT_STATUS = Object.freeze({
 });
 
 class BridgeError extends Error {
-  constructor({ statusCode, outcome, message, retryable = false, customerMessage }) {
+  constructor({ statusCode, outcome, message, retryable = false, customerMessage, reason }) {
     super(message);
     this.name = 'BridgeError';
     this.statusCode = statusCode;
     this.outcome = outcome;
     this.retryable = retryable;
+    this.reason = reason;
     this.customerMessage = customerMessage === undefined ? CUSTOMER_MESSAGES[outcome] ?? null : customerMessage;
   }
 }
@@ -424,6 +425,7 @@ function toErrorResponse(error, { operation = 'charge' } = {}) {
       transactionId: null,
       message: error.message,
       customerMessage: operation === 'charge' ? error.customerMessage : null,
+      ...(error.reason ? { reason: error.reason } : {}),
     };
     return { statusCode: error.statusCode, body };
   }
@@ -534,19 +536,19 @@ async function consumeChargePaymentSession(store, payload) {
   const tokenHash = hashPaymentSessionToken(payload.paymentSession);
   const record = await store.findPaymentSessionByTokenHash(tokenHash);
 
+  // Every refusal here is before the gateway: nothing was charged, and a new
+  // session (fresh card frame) lets the shopper pay, so it is retryable. The
+  // order's one-charge lock on the Labs side still stops a concurrent charge.
+  const sessionRefusal = (statusCode, outcome, message) => new BridgeError({ statusCode, outcome, message, retryable: true, reason: 'payment_session' });
   try {
     assertSessionMatchesCharge(record, payload, new Date());
   } catch (error) {
-    if (error.statusCode === 409) {
-      throw new BridgeError({ statusCode: 409, outcome: 'conflict', message: error.message, retryable: false });
-    }
-    throw invalid(error.message);
+    if (error.statusCode === 409) throw sessionRefusal(409, 'conflict', error.message);
+    throw sessionRefusal(400, 'invalid', error.message);
   }
 
   const consumed = await store.consumePaymentSession(tokenHash);
-  if (!consumed) {
-    throw new BridgeError({ statusCode: 409, outcome: 'conflict', message: 'Payment session has already been used', retryable: false });
-  }
+  if (!consumed) throw sessionRefusal(409, 'conflict', 'Payment session has already been used');
 
   return record;
 }
@@ -999,6 +1001,9 @@ async function handleWebhook(rawBody, signatureHeader, deps) {
 // ---------------------------------------------------------------------------
 
 const NOT_FOUND_AFTER_MS = 30 * 60 * 1000;
+// Past this, a charge may have settled outside the 2-day settled-batch lookup,
+// so finding nothing proves nothing: the answer stays pending (a human looks).
+const NOT_FOUND_BEFORE_MS = 36 * 60 * 60 * 1000;
 // Labs's clock and Authorize.Net's are not the same clock. A transaction
 // submitted slightly "before" the attempt started is still matched rather than
 // missed (a miss could become not_found and invite a second payment).
@@ -1056,21 +1061,48 @@ function fromSkinRecord({ outcome, transactionId, cardLast4, cardType, amountCen
   };
 }
 
+// A held charge (fraud filter review) is decided later in the merchant
+// interface, so Skin's own record cannot answer it: ask the gateway for the
+// transaction's current status. Anything short of a definite answer for this
+// amount stays held.
+async function recheckHeld({ config, gateway }, record, amountCents) {
+  if (record.outcome !== 'held' || !record.transactionId) return record;
+  let details;
+  try {
+    details = await gateway.getTransactionDetails(config, record.transactionId);
+  } catch {
+    return record;
+  }
+  const outcome = outcomeForTransactionStatus(details?.transactionStatus);
+  const gatewayCents = centsFromMoney(details?.authAmount ?? details?.settleAmount);
+  if (outcome === 'held' || gatewayCents !== amountCents) return record;
+  return {
+    outcome,
+    transactionId: record.transactionId,
+    cardLast4: cardLast4From(details?.payment?.creditCard?.cardNumber) || record.cardLast4,
+    cardType: details?.payment?.creditCard?.cardType || record.cardType,
+    amountCents: gatewayCents,
+    source: 'gateway_lookup',
+  };
+}
+
 async function reconcileAttempt({ config, store, gateway, now }, payload) {
   const { orderId, idempotencyKey, amountCents } = payload;
 
-  // 1. This service's own records for the attempt key.
+  // 1. This service's own records for the attempt key (a held one re-checked).
   const row = await store.findIdempotency(CHARGE_ENDPOINT, idempotencyKey);
   const body = row?.response_body;
   if (row?.status === 'completed' && body && (!body.orderId || body.orderId === orderId)) {
     const outcome = body.outcome || (body.paymentStatus === 'captured' && body.transactionId ? 'captured' : null);
     if (GATEWAY_OUTCOMES.has(outcome)) {
-      return fromSkinRecord({ outcome, transactionId: body.transactionId, cardLast4: body.cardLast4, cardType: body.cardType, amountCents: body.amountCents ?? amountCents });
+      const record = fromSkinRecord({ outcome, transactionId: body.transactionId, cardLast4: body.cardLast4, cardType: body.cardType, amountCents: body.amountCents ?? amountCents });
+      return recheckHeld({ config, gateway }, record, amountCents);
     }
   }
   const event = await store.findChargeEventByIdempotencyKey(idempotencyKey);
   if (event && event.order_id === orderId && GATEWAY_OUTCOMES.has(event.outcome)) {
-    return fromSkinRecord({ outcome: event.outcome, transactionId: event.authnet_transaction_id, cardLast4: event.card_last4, cardType: event.card_type, amountCents: event.amount_cents });
+    const record = fromSkinRecord({ outcome: event.outcome, transactionId: event.authnet_transaction_id, cardLast4: event.card_last4, cardType: event.card_type, amountCents: event.amount_cents });
+    return recheckHeld({ config, gateway }, record, amountCents);
   }
 
   // 2. The gateway: unsettled first, then batches settled in the last 2 days.
@@ -1127,12 +1159,13 @@ async function reconcileAttempt({ config, store, gateway, now }, payload) {
     };
   }
 
-  // 3. Nothing found. not_found only when the lookup worked and the attempt
-  //    is old enough that a charge would be visible by now.
+  // 3. Nothing found. not_found only when the lookup worked, the attempt is
+  //    old enough that a charge would be visible by now, and young enough that
+  //    the lookups still cover it (unsettled + batches settled in 2 days).
   const rowCreatedMs = Date.parse(row?.created_at || '');
   const referenceMs = Number.isFinite(rowCreatedMs) ? Math.max(startedMs, rowCreatedMs) : startedMs;
   const ageMs = now.getTime() - referenceMs;
-  const outcome = !lookupFailed && ageMs >= NOT_FOUND_AFTER_MS ? 'not_found' : 'pending';
+  const outcome = !lookupFailed && ageMs >= NOT_FOUND_AFTER_MS && ageMs <= NOT_FOUND_BEFORE_MS ? 'not_found' : 'pending';
   return { outcome, transactionId: null, cardLast4: null, cardType: null, amountCents: null, source: 'gateway_lookup' };
 }
 
@@ -1231,7 +1264,9 @@ async function reconcileReversal({ config, store, gateway, now }, payload) {
   }
   if (candidates.length > MAX_REFUND_DETAIL_LOOKUPS) lookupFailed = true;
 
-  return answer(!lookupFailed && oldEnough ? 'not_found' : 'pending');
+  // Older than the lookups reach, finding no refund proves nothing.
+  const withinLookupWindow = now.getTime() - referenceMs <= NOT_FOUND_BEFORE_MS;
+  return answer(!lookupFailed && oldEnough && withinLookupWindow ? 'not_found' : 'pending');
 }
 
 async function handleReconcile(req, rawBody, deps) {
@@ -1258,7 +1293,7 @@ async function handleReconcile(req, rawBody, deps) {
 // Outbox retry
 // ---------------------------------------------------------------------------
 
-async function retryPendingSyncDeliveries(authTokenFromRequest, deps) {
+async function retryPendingSyncDeliveries(authTokenFromRequest, deps, { cronAuthorization } = {}) {
   const d = resolveDeps(deps);
   let config;
   try {
@@ -1268,10 +1303,16 @@ async function retryPendingSyncDeliveries(authTokenFromRequest, deps) {
     throw unavailable('Payment service is not configured');
   }
 
-  if (!config.labsSync.retryAuthToken) {
+  // Either the operator's retry token, or the scheduled Vercel Cron call.
+  const { retryAuthToken, cronSecret } = config.labsSync;
+  if (!retryAuthToken && !cronSecret) {
     throw new BridgeError({ statusCode: 503, outcome: 'invalid', message: 'Retry endpoint is not configured' });
   }
-  if (!safeEqualHex(digestHex(String(authTokenFromRequest || '')), digestHex(config.labsSync.retryAuthToken))) {
+  const byToken = Boolean(retryAuthToken)
+    && safeEqualHex(digestHex(String(authTokenFromRequest || '')), digestHex(retryAuthToken));
+  const byCron = Boolean(cronSecret)
+    && safeEqualHex(digestHex(String(cronAuthorization || '')), digestHex(`Bearer ${cronSecret}`));
+  if (!byToken && !byCron) {
     throw new BridgeError({ statusCode: 401, outcome: 'invalid', message: 'Unauthorized retry token' });
   }
   if (!assertLabsSyncConfigured(config)) {

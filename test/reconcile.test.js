@@ -190,3 +190,53 @@ test('another order\'s invoice is still never matched', async () => {
   const res = await reconcile(ctx, body({ invoiceNumber: 'VL-10042' }));
   assert.equal(res.body.outcome, 'not_found');
 });
+
+// A charge Authorize.Net's fraud filter held is decided later, in the merchant
+// interface. Answering "held" from Skin's own record forever meant an approved
+// charge never marked the order paid, and a declined one never released it.
+test('a recorded held charge is re-checked at the gateway: approved in review → captured', async () => {
+  const ctx = ctxWith({ details: (id) => ({ transId: id, transactionStatus: 'capturedPendingSettlement', authAmount: 46.04, payment: { creditCard: { cardNumber: 'XXXX1111', cardType: 'Visa' } } }) });
+  ctx.store.db.idempotency.set(`${CHARGE_ENDPOINT}|${KEY}`, {
+    status: 'completed', request_hash: 'h', response_status: 202,
+    response_body: { orderId: ORDER, outcome: 'held', transactionId: '60212345678', amountCents: 4604 },
+  });
+  const res = await reconcile(ctx);
+  assert.equal(res.body.outcome, 'captured');
+  assert.equal(res.body.transactionId, '60212345678');
+  assert.equal(res.body.source, 'gateway_lookup');
+  assert.ok(ctx.gateway.calls.some((c) => c.name === 'getTransactionDetails'));
+});
+
+test('a recorded held charge declined in review → declined; still under review → held; lookup failure → held', async () => {
+  for (const [details, expected] of [
+    [(id) => ({ transId: id, transactionStatus: 'declined', authAmount: 46.04 }), 'declined'],
+    [(id) => ({ transId: id, transactionStatus: 'FDSPendingReview', authAmount: 46.04 }), 'held'],
+    [() => { throw new Error('E00011'); }, 'held'],
+  ]) {
+    const ctx = ctxWith({ details });
+    ctx.store.db.idempotency.set(`${CHARGE_ENDPOINT}|${KEY}`, {
+      status: 'completed', request_hash: 'h', response_status: 202,
+      response_body: { orderId: ORDER, outcome: 'held', transactionId: '60212345678', amountCents: 4604 },
+    });
+    const res = await reconcile(ctx);
+    assert.equal(res.body.outcome, expected);
+  }
+});
+
+test('a held answer at the gateway for another amount is not trusted: stays held', async () => {
+  const ctx = ctxWith({ details: (id) => ({ transId: id, transactionStatus: 'capturedPendingSettlement', authAmount: 99.99 }) });
+  ctx.store.db.idempotency.set(`${CHARGE_ENDPOINT}|${KEY}`, {
+    status: 'completed', request_hash: 'h', response_status: 202,
+    response_body: { orderId: ORDER, outcome: 'held', transactionId: '60212345678', amountCents: 4604 },
+  });
+  const res = await reconcile(ctx);
+  assert.equal(res.body.outcome, 'held');
+});
+
+// The lookups see unsettled transactions and batches settled in the last two
+// days. Past that, "not found" is no longer evidence that nothing was charged.
+test('nothing found for an attempt older than the lookup window → pending, never not_found', async () => {
+  const ctx = ctxWith();
+  const res = await reconcile(ctx, body({ attemptStartedAt: minutesAgo(60 * 40) }));
+  assert.equal(res.body.outcome, 'pending');
+});

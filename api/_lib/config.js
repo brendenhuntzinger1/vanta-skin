@@ -94,6 +94,8 @@ function loadLabsSyncConfig() {
     // result is saved. Anything that misses it goes through the outbox.
     timeoutMs: positiveNumber('VANTA_LABS_SYNC_TIMEOUT_MS', 4000),
     retryAuthToken: optional('VANTA_SYNC_RETRY_TOKEN', ''),
+    // Vercel Cron sends `Authorization: Bearer $CRON_SECRET` on its GET.
+    cronSecret: optional('CRON_SECRET', ''),
     retryBatchSize: positiveNumber('VANTA_SYNC_RETRY_BATCH_SIZE', 25),
     // Vanta Labs project's "Protection Bypass for Automation" secret, needed
     // only while Labs is behind Vercel Deployment Protection (its previews).
@@ -149,7 +151,7 @@ function loadConfig() {
         .filter(Boolean),
       allowedEmbedOrigins: loadAllowedEmbedOrigins(),
       paymentSessionTtlSeconds: positiveNumber('VANTA_PAYMENT_SESSION_TTL_SECONDS', 900),
-      requirePaymentSession: envBool('VANTA_REQUIRE_PAYMENT_SESSION', false),
+      requirePaymentSession: envBool('VANTA_REQUIRE_PAYMENT_SESSION', true),
     },
     supabase: {
       url: required('SUPABASE_URL'),

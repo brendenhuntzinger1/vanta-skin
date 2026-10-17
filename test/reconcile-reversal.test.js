@@ -113,6 +113,10 @@ test('refund: too early to say, or a failed lookup, is pending — never not_fou
   }))).body.outcome, 'pending');
 });
 
+test('refund: nothing found once the attempt is older than the lookups reach → pending, never not_found', async () => {
+  assert.equal((await reconcile(ctxWith(), body({ attemptStartedAt: minutesAgo(60 * 40) }))).body.outcome, 'pending');
+});
+
 test('void: the charge reads voided → the void happened', async () => {
   const ctx = ctxWith({ details: () => ({ transId: CHARGE_TX, transactionStatus: 'voided' }) });
   const res = await reconcile(ctx, body({ operation: 'void', idempotencyKey: VOID_KEY, amountCents: 4604 }));

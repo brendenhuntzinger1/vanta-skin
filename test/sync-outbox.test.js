@@ -106,3 +106,37 @@ test('retry requires the token; errors carry no variable names', async () => {
   assert.equal(off.statusCode, 503);
   assert.equal(JSON.stringify(off.body).includes('VANTA_'), false);
 });
+
+// No scheduler existed, so a callback that missed its inline delivery waited
+// for someone to call the retry endpoint by hand.
+test('the scheduled Vercel Cron call is authorised by CRON_SECRET, and only by it', async () => {
+  const labs = fakeLabs(() => ({ status: 200 }));
+  const ctx = makeDeps({ labs, now: () => NOW });
+  ctx.deps.loadConfig = () => testConfig({ labsSync: { retryAuthToken: '', cronSecret: 'cron-secret' } });
+  ctx.store.db.outbox.push(outboxRow(1));
+  const call = async (authorization) => {
+    try {
+      return await retryPendingSyncDeliveries(null, ctx.deps, { cronAuthorization: authorization });
+    } catch (error) {
+      return toErrorResponse(error, { operation: 'sync-retry' });
+    }
+  };
+  assert.equal((await call('Bearer wrong')).statusCode, 401);
+  assert.equal((await call(undefined)).statusCode, 401);
+  assert.equal(labs.calls.length, 0);
+  const ok = await call('Bearer cron-secret');
+  assert.equal(ok.statusCode, 200);
+  assert.equal(ctx.store.db.outbox[0].delivery_status, 'delivered');
+});
+
+test('the retry token never authorises as a cron bearer, nor the cron secret as a token', async () => {
+  const ctx = makeDeps({ now: () => NOW });
+  ctx.deps.loadConfig = () => testConfig({ labsSync: { retryAuthToken: 'retry-token', cronSecret: 'cron-secret' } });
+  const res = await retryPendingSyncDeliveries('cron-secret', ctx.deps).catch((e) => toErrorResponse(e, { operation: 'sync-retry' }));
+  assert.equal(res.statusCode, 401);
+});
+
+test('vercel.json schedules the outbox retry', () => {
+  const crons = require('../vercel.json').crons;
+  assert.ok(crons.some((c) => c.path === '/api/payments/sync-retry'));
+});

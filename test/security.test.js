@@ -43,6 +43,17 @@ test('verifyWebhookSignature supports hex-encoded signature keys', () => {
   assert.equal(verifyWebhookSignature(hexKey, payload, signature), true);
 });
 
+// A real Signature Key is 128 hex characters. Authorize.Net's webhook samples
+// HMAC with the key text itself (hex-decoding is for the transaction hash
+// field), so a hex-looking key must still verify a signature made that way.
+test('verifyWebhookSignature accepts a real-format (128-hex) key used as text, as Authorize.Net signs webhooks', () => {
+  const key = 'AB'.repeat(64);
+  const payload = '{"notificationId":"n-1"}';
+  const signature = `sha512=${createHmac('sha512', key).update(payload, 'utf8').digest('hex').toUpperCase()}`;
+  assert.equal(verifyWebhookSignature(key, payload, signature), true);
+  assert.equal(verifyWebhookSignature(key, payload.replace('1', '2'), signature), false);
+});
+
 // An unset AUTHNET_SIGNATURE_KEY used to accept every webhook unsigned, so
 // anyone could post "authcapture.created" for a known transaction id.
 test('verifyWebhookSignature fails closed when no signature key is configured', () => {

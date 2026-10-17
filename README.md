@@ -112,7 +112,7 @@ Optional:
 - `VANTA_ALLOWED_ORIGIN_STOREFRONTS` (comma-separated allowlist, default `vantalabsresearch.com`)
 - `VANTA_EMBED_ALLOWED_ORIGINS` (comma-separated exact https origins allowed to iframe the hosted component, default `https://vantalabsresearch.com`)
 - `VANTA_PAYMENT_SESSION_TTL_SECONDS` (default `900`)
-- `VANTA_REQUIRE_PAYMENT_SESSION` (default `false`; set `true` so every charge must carry a live single-use session token)
+- `VANTA_REQUIRE_PAYMENT_SESSION` (default `true`: every charge must carry a live single-use session token; `false` only for a non-embedded integration)
 
 #### Supabase
 
@@ -126,7 +126,8 @@ Optional:
 - `VANTA_LABS_SYNC_SHARED_SECRET`
 - `VANTA_LABS_SYNC_TIMEOUT_MS` (default `4000`)
 - `VANTA_LABS_PROTECTION_BYPASS` (Vanta Labs project's Vercel "Protection Bypass for Automation" secret; only while Labs is behind Vercel Deployment Protection, e.g. its previews. Sent as the `x-vercel-protection-bypass` header on callbacks. HMAC is still required.)
-- `VANTA_SYNC_RETRY_TOKEN` (required to call `/api/payments/sync-retry`)
+- `VANTA_SYNC_RETRY_TOKEN` (operator calls to `POST /api/payments/sync-retry`)
+- `CRON_SECRET` (Vercel Cron's bearer for the scheduled `GET /api/payments/sync-retry` in `vercel.json`, every 10 minutes; Production only)
 - `VANTA_SYNC_RETRY_BATCH_SIZE` (default `25`)
 
 ### Database migration

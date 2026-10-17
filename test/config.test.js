@@ -107,3 +107,12 @@ test('config errors are tagged so responses never echo them', () => {
     assert.throws(() => loadConfig(), (err) => err.code === 'config_error');
   });
 });
+
+// Labs always opens a session for the embedded card form. Unset, the variable
+// used to mean "sessions optional", so a production deploy that forgot it
+// accepted signed charges with no single-use session.
+test('payment sessions are required unless explicitly turned off', () => {
+  withEnv({}, () => assert.equal(loadConfig().bridge.requirePaymentSession, true));
+  withEnv({ VANTA_REQUIRE_PAYMENT_SESSION: 'false' }, () => assert.equal(loadConfig().bridge.requirePaymentSession, false));
+  withEnv({ VANTA_REQUIRE_PAYMENT_SESSION: 'true' }, () => assert.equal(loadConfig().bridge.requirePaymentSession, true));
+});

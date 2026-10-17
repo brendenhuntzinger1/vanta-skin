@@ -71,12 +71,13 @@ function verifyWebhookSignature(signatureKey, payload, headerValue) {
   // came from Authorize.net, so none is accepted.
   if (!signatureKey || !headerValue) return false;
 
-  const normalizedKey = /^[A-Fa-f0-9]+$/.test(signatureKey) && signatureKey.length % 2 === 0
-    ? Buffer.from(signatureKey, 'hex')
-    : signatureKey;
+  // Authorize.Net signs webhooks with the Signature Key's text as the HMAC
+  // key. The hex-decoded form (used for transHashSha2) is accepted too, so a
+  // key in either convention verifies; both forms are the same secret.
   const incoming = String(headerValue).replace(/^sha512=/i, '').toLowerCase();
-  const expected = createHmac('sha512', normalizedKey).update(payload, 'utf8').digest('hex');
-  return safeEqualHex(expected, incoming);
+  const keys = [signatureKey];
+  if (/^[A-Fa-f0-9]+$/.test(signatureKey) && signatureKey.length % 2 === 0) keys.push(Buffer.from(signatureKey, 'hex'));
+  return keys.some((key) => safeEqualHex(createHmac('sha512', key).update(payload, 'utf8').digest('hex'), incoming));
 }
 
 module.exports = {
