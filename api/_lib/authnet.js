@@ -77,8 +77,8 @@ function refIdFor(idempotencyKey) {
 // 17 hex digits of SHA-256(orderId), 20 characters in all (Authorize.Net's
 // limit). Deterministic, so reconciliation recomputes it from the order id,
 // and the order stays linked to the charge in payment_events, the idempotency
-// record and Labs' own attempt record. The originating storefront and the
-// goods are still named in order.description and the line items.
+// record and Labs' own attempt record. The originating storefront is still
+// named in order.description.
 const INVOICE_PREFIX = 'VS-';
 
 function invoiceNumberFor(payload) {
@@ -145,13 +145,13 @@ function createTransactionRequest(config, transactionRequestType, refId) {
 
 // What Authorize.Net receives for a charge, and nothing else:
 //   refId, transactionType, amount, payment.opaqueData, order.invoiceNumber,
-//   order.description, line items (the real goods at their own prices),
-//   tax / shipping (when > 0), customer.email (when given), billTo (when
-//   given), transactionSettings.duplicateWindow. No customer IP.
+//   order.description, line items (only if the storefront sends them; Labs
+//   does not), tax / shipping (when > 0), customer.email (when given), billTo
+//   (when given), transactionSettings.duplicateWindow. No customer IP.
 // The description names the merchant of record and the true originating
-// storefront; the invoice number is the storefront's order id. Nothing is
-// rebranded: research-product sales are never made to look like skincare
-// sales, per the written processing approval.
+// storefront; the invoice number is the VS- series above. Nothing is
+// rebranded: a research-product sale is never made to look like a skincare
+// sale.
 function buildChargeRequest(config, payload, { refId, idempotencyKey } = {}) {
   const transactionRequestType = new APIContracts.TransactionRequestType();
   transactionRequestType.setTransactionType(APIContracts.TransactionTypeEnum.AUTHCAPTURETRANSACTION);

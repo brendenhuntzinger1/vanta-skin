@@ -128,7 +128,7 @@ and Labs opens a fresh session and card frame.
   - `payment.opaqueData`: `dataDescriptor`, `dataValue`
   - `order.invoiceNumber`: `VS-` + the first 17 hex digits (upper case) of SHA-256(`orderId`), exactly 20 characters. Deterministic: reconciliation recomputes it from `orderId`, and the charge response returns it as `invoiceNumber` so Labs records it on the attempt. The order id stays linked to the charge in `payment_events`, `payment_idempotency` and Labs' `payment_bridge_attempts`. Reconciliation also matches the order-id invoice used by earlier builds.
   - `order.description`: `<AUTHNET_MERCHANT_DESCRIPTOR> | <originStorefront>` — names the merchant of record and the true originating storefront
-  - `lineItems`: the real goods (sku/name/description/quantity/unit price), when supplied (≤ 30)
+  - `lineItems`: only when the storefront supplies them (≤ 30). Optional in Authorize.Net's API; Labs does not send them (owner, 2026-10-17)
   - `tax` `{ amount, name: "Tax" }` — only when `taxCents > 0`
   - `shipping` `{ amount, name: "Shipping" }` — only when `shippingCents > 0`
   - `customer.email` — only when given (≤ 255)

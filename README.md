@@ -71,8 +71,8 @@ authentication provider. Nothing is sent for it.
 Charge: `refId` (sha256 of the idempotency key, 20 chars), `authCaptureTransaction`,
 amount, `opaqueData`, `order.invoiceNumber` (`VS-` + 17 hex digits of
 SHA-256(orderId), deterministic; see VANTA_LABS_HANDOFF.md), `order.description`
-(`<AUTHNET_MERCHANT_DESCRIPTOR> | <originStorefront>`), real line items when
-supplied, tax and shipping amounts when > 0, `customer.email` when given,
+(`<AUTHNET_MERCHANT_DESCRIPTOR> | <originStorefront>`), line items only when the storefront supplies them (Labs does not; owner
+2026-10-17), tax and shipping amounts when > 0, `customer.email` when given,
 `billTo` (name, address, city, state, zip, country, phone) when given,
 truncated to Authorize.net's limits, and `duplicateWindow = 120`. No raw card
 data or customer IP. Refund: `refId`, `refundTransaction`, amount, masked card
