@@ -147,7 +147,16 @@ async function registerWebhook(fetchImpl, creds, host, rawUrl) {
         status: 'active',
       }),
     });
-    return { ok: res.status >= 200 && res.status < 300, status: res.status, created: res.status >= 200 && res.status < 300 };
+    if (res.status >= 200 && res.status < 300) return { ok: true, status: res.status, created: true };
+    // Authorize.Net's own reason, with any URL removed: the registered URL
+    // carries the Preview's webhook bypass and must never be echoed back.
+    let reason = 'rejected';
+    try {
+      const body = JSON.parse((await res.text()).replace(/^\uFEFF/, ''));
+      reason = String(body?.message || body?.reason || reason);
+    } catch { /* not JSON */ }
+    reason = reason.replace(/https?:\/\/\S+/gi, '[url]').slice(0, 200);
+    return { ok: false, status: res.status, created: false, reason };
   } catch {
     return { ok: false, status: null, created: false, reason: 'unreachable' };
   }

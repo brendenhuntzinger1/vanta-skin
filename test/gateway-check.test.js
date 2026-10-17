@@ -193,3 +193,18 @@ test('register=1 refuses a webhook URL that is not this deployment\'s webhook en
   }
   assert.equal(gw.calls.filter((c) => c.method === 'POST' && c.url.endsWith('/webhooks')).length, 0);
 });
+
+test('a refused registration reports Authorize.Net\'s reason with the URL (and its bypass) removed', async () => {
+  const url = `https://${HOST}/api/payments/webhook?x-vercel-protection-bypass=BYPASS-SECRET-5`;
+  const fetchImpl = async (u, init = {}) => {
+    if (u === SANDBOX_API) return { ok: true, status: 200, text: async () => JSON.stringify(ok({ publicClientKey: SECRETS.clientKey })) };
+    if (u === `${SANDBOX_REST}/webhooks` && init.method === 'POST') {
+      return { ok: false, status: 400, text: async () => JSON.stringify({ status: 400, reason: 'BAD_REQUEST', message: `Unable to reach ${url} (status 401)` }) };
+    }
+    if (u === `${SANDBOX_REST}/webhooks`) return { ok: true, status: 200, text: async () => '[]' };
+    throw new Error(u);
+  };
+  const result = await runGatewayCheck({ env: env({ AUTHNET_WEBHOOK_URL: url }), fetchImpl, register: true });
+  assert.deepEqual(result.checks.webhookRegistration, { ok: false, status: 400, created: false, reason: 'Unable to reach [url] (status 401)' });
+  noSecretsIn(result);
+});
