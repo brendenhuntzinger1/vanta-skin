@@ -347,8 +347,14 @@ Accept.js is supported in this configuration:
 - Accept.js executes in whatever window loads it. Inside the iframe it is
   loaded from the Authorize.net CDN (`https://jstest.authorize.net/v1/Accept.js`
   in sandbox) and `Accept.dispatchData()` posts directly to the Authorize.net
-  tokenization API over CORS-enabled HTTPS (`apitest.authorize.net`). Neither
-  call depends on the top-level page's origin, so cross-origin framing works.
+  tokenization API over CORS-enabled HTTPS: `apitest.authorize.net` in
+  sandbox, `api2.authorize.net` in production (each loader's
+  `encryptEndPoint`). Neither call depends on the top-level page's origin, so
+  cross-origin framing works.
+- The loader injects AcceptCore.js itself, and `dispatchData` is a stub that
+  answers `E_WC_03` until AcceptCore has announced itself (`window.isReady`),
+  which is after the loader's own `onload`. The frame loads Accept.js as soon
+  as the session is valid and waits for that signal before the first use.
 - The iframe document must be HTTPS (the Vanta Skin deployment is).
 - The component's CSP allows scripts only from the Authorize.net CDN plus the
   hash-locked inline bootstrap, and connections only to the Vanta Skin origin
@@ -380,7 +386,12 @@ Accept.js is supported in this configuration:
    `vanta:pay:submit-request` so the checkout runs that same action. The frame
    then tokenizes with Accept.js and posts `vanta:pay:tokenized` with
    `opaqueData`, or `vanta:pay:error` with Accept.js's `code` (E_WC_05 …,
-   never card data or raw text) for the checkout to word.
+   never card data or raw text) for the checkout to word. Two codes are the
+   frame's own: `VS_ACCEPT_LOAD` (Accept.js or AcceptCore.js did not load
+   within 15 s; the next press loads it again from scratch) and `VS_TIMEOUT`
+   (no answer from Accept.js within 25 s of the press, which is under the
+   Labs page's 30 s limit; the form is usable again and a late answer is
+   dropped). The card details stay in the fields after any error.
 6. Labs checkout sends `opaqueData` + `paymentSession` to its backend, which
    calls `POST /api/payments/charge` as before (HMAC + idempotency). The
    charge re-validates the session (exact order/amount/storefront match) and
@@ -404,6 +415,9 @@ Accept.js is supported in this configuration:
   sent to Accept.js.
 - The session token is passed in the URL fragment (`#session=`), never sent to
   a server, and the frame removes it from its own address once read.
+- `session-validate` returns only what the frame uses: `ok`, `sessionId`,
+  `embedOrigin` and `authnet: { apiLoginId, clientKey, sandbox }`. The order
+  id, amount, currency and expiry stay server-side.
 - Every message carries `sessionId` (first 24 hex chars of the token's
   SHA-256, computable by both sides); mismatched messages are dropped.
 - Message types: `vanta:pay:ready`, `vanta:pay:tokenized`, `vanta:pay:error`,
