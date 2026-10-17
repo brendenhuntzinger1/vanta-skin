@@ -11,13 +11,16 @@ const { buildFrameAncestors } = require('./payment-session');
 // these exact strings at request time.
 
 const EMBED_STYLE = [
-  'body{font-family:system-ui,-apple-system,"Segoe UI",sans-serif;margin:0;padding:12px;color:#1c1a17;background:#fff}',
-  'label{display:block;font-size:12px;font-weight:600;margin:8px 0 4px}',
-  'input{box-sizing:border-box;width:100%;padding:10px;border:1px solid #c9c4bb;border-radius:6px;font-size:16px}',
-  '.row{display:flex;gap:8px}.row>div{flex:1}',
+  // Matches the Vanta Labs checkout fields (light theme): soft fill, pill
+  // shape, muted labels, 16px text so iOS Safari does not zoom.
+  'body{font-family:system-ui,-apple-system,"Segoe UI",sans-serif;margin:0;padding:4px 2px;color:#121212;background:#fff}',
+  'label{display:block;font-size:12px;font-weight:500;color:#6B665E;margin:10px 4px 6px}',
+  'input{box-sizing:border-box;width:100%;padding:12px 16px;border:1px solid #E7E2D9;border-radius:999px;background:#F5F2EC;font-size:16px;color:#121212;outline:none}',
+  'input:focus{border-color:#121212;background:#fff}',
+  '.row{display:flex;gap:10px}.row>div{flex:1}',
   '.sr-submit{position:absolute;left:-9999px;width:1px;height:1px;overflow:hidden}',
-  '.status{font-size:12px;margin-top:8px;min-height:16px}',
-  '.error{color:#a33}.muted{color:#6b675f}',
+  '.status{font-size:12px;margin:8px 4px 0;min-height:16px}',
+  '.error{color:#a33}.muted{color:#6B665E}',
 ].join('');
 
 const EMBED_SCRIPT = `(function () {
