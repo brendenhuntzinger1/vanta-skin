@@ -131,6 +131,16 @@ async function runGatewayCheck({ env = process.env, fetchImpl = globalThis.fetch
     .map(([k]) => k);
   if (missing.length) return { ok: false, error: 'credentials_missing', missing };
 
+  // The shape of each value, never the value: a pasted space or newline is the
+  // commonest reason good credentials fail. Authorize.Net issues 16-character
+  // transaction keys and API login ids of up to 25 characters.
+  const shape = (v) => ({ surroundingWhitespace: String(v) !== String(v).trim() });
+  const credentialShape = {
+    apiLoginId: { ...shape(creds.apiLoginId), lengthPlausible: String(creds.apiLoginId).trim().length >= 6 && String(creds.apiLoginId).trim().length <= 25 },
+    transactionKey: { ...shape(creds.transactionKey), standardLength: String(creds.transactionKey).trim().length === 16 },
+    clientKey: { ...shape(creds.clientKey), lengthPlausible: String(creds.clientKey).trim().length >= 32 },
+  };
+
   const merchantAuthentication = { name: creds.apiLoginId, transactionKey: creds.transactionKey };
   const [authenticate, tokenize, details, unsettled] = await Promise.all([
     callApi(fetchImpl, { authenticateTestRequest: { merchantAuthentication } }),
@@ -143,6 +153,13 @@ async function runGatewayCheck({ env = process.env, fetchImpl = globalThis.fetch
     callApi(fetchImpl, { getMerchantDetailsRequest: { merchantAuthentication } }),
     callApi(fetchImpl, { getUnsettledTransactionListRequest: { merchantAuthentication, paging: { limit: 1, offset: 1 } } }),
   ]);
+  // When a value carries whitespace and authentication failed, say whether the
+  // trimmed values would authenticate, so the fix is known before anyone edits.
+  let authenticateTrimmed;
+  if (!authenticate.ok && (credentialShape.apiLoginId.surroundingWhitespace || credentialShape.transactionKey.surroundingWhitespace)) {
+    const trimmed = await callApi(fetchImpl, { authenticateTestRequest: { merchantAuthentication: { name: String(creds.apiLoginId).trim(), transactionKey: String(creds.transactionKey).trim() } } });
+    authenticateTrimmed = { ok: trimmed.ok, code: trimmed.code };
+  }
   const hooks = await checkWebhooks(fetchImpl, creds, String(env.VERCEL_BRANCH_URL || env.VERCEL_URL || ''), ping);
 
   const checks = {
@@ -157,7 +174,7 @@ async function runGatewayCheck({ env = process.env, fetchImpl = globalThis.fetch
     ...(ping ? { webhookPing: hooks.webhookPing } : {}),
   };
   const ok = Object.values(checks).every((c) => c.ok) && checks.merchantDetails.publicClientKeyMatches === true;
-  return { ok, checks };
+  return { ok, checks, credentialShape, ...(authenticateTrimmed ? { authenticateTrimmed } : {}) };
 }
 
 // One gateway check per window per instance. The health endpoint also needs a

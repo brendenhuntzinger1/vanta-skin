@@ -135,3 +135,22 @@ test('the limiter allows one gateway check per window', () => {
   assert.deepEqual(limiter.take(30_000), { allowed: false, retryAfterSeconds: 31 });
   assert.deepEqual(limiter.take(61_000), { allowed: true });
 });
+
+test('reports the shape of each credential, never its value, and whether trimming would fix a failed login', async () => {
+  const gw = fakeGateway({
+    api: { authenticateTestRequest: err('E00007') },
+  });
+  // The fake answers by request type, so make the trimmed retry succeed by
+  // checking the credentials it was sent.
+  const fetchImpl = async (url, init) => {
+    if (url === SANDBOX_API && init.body.includes('authenticateTestRequest') && init.body.includes(`"transactionKey":"${SECRETS.transactionKey}"`)) {
+      return { ok: true, status: 200, text: async () => JSON.stringify(ok()) };
+    }
+    return gw.fetchImpl(url, init);
+  };
+  const result = await runGatewayCheck({ env: env({ AUTHNET_TRANSACTION_KEY: `${SECRETS.transactionKey}\n` }), fetchImpl });
+  assert.deepEqual(result.credentialShape.transactionKey, { surroundingWhitespace: true, standardLength: false });
+  assert.deepEqual(result.credentialShape.apiLoginId, { surroundingWhitespace: false, lengthPlausible: true });
+  assert.deepEqual(result.authenticateTrimmed, { ok: true, code: 'I00001' });
+  noSecretsIn(result);
+});
