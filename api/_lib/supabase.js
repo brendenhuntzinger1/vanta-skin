@@ -250,6 +250,14 @@ function createStore(client) {
       if (error) throw new Error(`Unable to consume payment session: ${error.message}`);
       return Array.isArray(data) ? data.length : 0;
     },
+
+    // The retention policy lives in SQL (purge_payment_bridge_data, migration
+    // 20261017002000) so it runs in one transaction and is reviewed in one place.
+    async purgeExpiredPaymentData(now = new Date()) {
+      const { data, error } = await client.rpc('purge_payment_bridge_data', { p_now: now.toISOString() });
+      if (error) throw new Error(`Unable to purge expired payment data: ${error.message}`);
+      return data;
+    },
   };
 }
 
