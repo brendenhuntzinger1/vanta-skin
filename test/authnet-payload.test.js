@@ -83,19 +83,21 @@ test('charge request: real line items are sent; no customer IP', () => {
   assert.equal(line.unitPrice, '29.99');
 });
 
-test('charge request: description names the merchant of record and the true originating storefront', () => {
+test('charge request: description names the merchant of record only', () => {
   const tx = build(fullPayload()).transactionRequest;
-  assert.equal(tx.order.description, 'Vanta Skin | vantalabsresearch.com');
+  assert.equal(tx.order.description, 'Vanta Skin');
 });
 
-// The originating storefront and its order id must reach the processor
-// unchanged on the charge. Refund and void carry only the masked card
-// reference Authorize.Net requires — never a PAN.
-test('processor requests preserve originating-storefront records', () => {
+// The processor sees the merchant of record only: the originating storefront
+// never reaches the gateway (processor direction, owner 2026-10-17); it stays
+// in Skin's internal records. The deterministic invoice and any
+// storefront-supplied line items still go out unchanged. Refund and void
+// carry only the masked card reference Authorize.Net requires — never a PAN.
+test('processor requests never carry the originating storefront', () => {
   const payload = fullPayload();
   const key = `vskin:charge:${payload.orderId}:2`;
   const charge = JSON.stringify(wire(buildChargeRequest(config, payload, { idempotencyKey: key })));
-  assert.equal(charge.includes('vantalabsresearch.com'), true);
+  assert.equal(charge.includes('vantalabsresearch.com'), false);
   assert.equal(charge.includes(invoiceNumberFor(payload)), true);
   assert.equal(charge.includes('BPC-157'), true);
 

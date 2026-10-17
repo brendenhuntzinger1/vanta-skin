@@ -77,8 +77,8 @@ function refIdFor(idempotencyKey) {
 // 17 hex digits of SHA-256(orderId), 20 characters in all (Authorize.Net's
 // limit). Deterministic, so reconciliation recomputes it from the order id,
 // and the order stays linked to the charge in payment_events, the idempotency
-// record and Labs' own attempt record. The originating storefront is still
-// named in order.description.
+// record and Labs' own attempt record. The originating storefront is kept in
+// those internal records, never forwarded to the gateway.
 const INVOICE_PREFIX = 'VS-';
 
 function invoiceNumberFor(payload) {
@@ -148,10 +148,11 @@ function createTransactionRequest(config, transactionRequestType, refId) {
 //   order.description, line items (only if the storefront sends them; Labs
 //   does not), tax / shipping (when > 0), customer.email (when given), billTo
 //   (when given), transactionSettings.duplicateWindow. No customer IP.
-// The description names the merchant of record and the true originating
-// storefront; the invoice number is the VS- series above. Nothing is
-// rebranded: a research-product sale is never made to look like a skincare
-// sale.
+// The description names the merchant of record only: the processor has
+// directed that gateway records show Vanta Skin alone (owner, 2026-10-17).
+// The true originating storefront is unchanged everywhere else — validated
+// against the allowlist, bound to the payment session, and recorded in
+// payment_events, the idempotency record and the Labs callbacks.
 function buildChargeRequest(config, payload, { refId, idempotencyKey } = {}) {
   const transactionRequestType = new APIContracts.TransactionRequestType();
   transactionRequestType.setTransactionType(APIContracts.TransactionTypeEnum.AUTHCAPTURETRANSACTION);
@@ -166,7 +167,7 @@ function buildChargeRequest(config, payload, { refId, idempotencyKey } = {}) {
 
   const order = new APIContracts.OrderType();
   order.setInvoiceNumber(invoiceNumberFor(payload));
-  order.setDescription(`${config.authnet.merchantDescriptor} | ${cleanText(payload.originStorefront, 60) || 'unknown storefront'}`.slice(0, LIMITS.description));
+  order.setDescription(cleanText(config.authnet.merchantDescriptor, LIMITS.description));
   transactionRequestType.setOrder(order);
 
   if (Array.isArray(payload.lineItems) && payload.lineItems.length) {

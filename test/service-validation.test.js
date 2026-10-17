@@ -82,9 +82,9 @@ test('redactPaymentPayload drops paymentSession bearer tokens', () => {
 });
 
 // The full Authorize.Net field inventory is pinned in authnet-payload.test.js.
-// Line items name the real goods, the invoice is the storefront's order id,
-// and the description names the true originating storefront (written approval).
-test('buildChargeRequest itemises the real goods and the true storefront', () => {
+// Line items name the real goods, the invoice derives deterministically from
+// the order id, and the description names the merchant of record only.
+test('buildChargeRequest itemises the real goods and the merchant of record', () => {
   const config = { authnet: { apiLoginId: 'l', transactionKey: 't', merchantDescriptor: 'Vanta Skin' } };
   const json = buildChargeRequest(config, {
     orderId: 'order-2f5da385-b1b1-42be-a806-80adb74205f4',
@@ -100,5 +100,5 @@ test('buildChargeRequest itemises the real goods and the true storefront', () =>
   assert.equal(json.amount, '46.04');
   assert.equal(json.payment.opaqueData.dataValue, 'tok');
   assert.match(json.order.invoiceNumber, /^VS-[0-9A-F]{17}$/);
-  assert.equal(json.order.description, 'Vanta Skin | vantalabsresearch.com');
+  assert.equal(json.order.description, 'Vanta Skin');
 });

@@ -127,7 +127,7 @@ and Labs opens a fresh session and card frame.
   - `amount`: `amountCents / 100`, two decimals
   - `payment.opaqueData`: `dataDescriptor`, `dataValue`
   - `order.invoiceNumber`: `VS-` + the first 17 hex digits (upper case) of SHA-256(`orderId`), exactly 20 characters. Deterministic: reconciliation recomputes it from `orderId`, and the charge response returns it as `invoiceNumber` so Labs records it on the attempt. The order id stays linked to the charge in `payment_events`, `payment_idempotency` and Labs' `payment_bridge_attempts`. Reconciliation also matches the order-id invoice used by earlier builds.
-  - `order.description`: `<AUTHNET_MERCHANT_DESCRIPTOR> | <originStorefront>` — names the merchant of record and the true originating storefront
+  - `order.description`: `<AUTHNET_MERCHANT_DESCRIPTOR>` — names the merchant of record only (processor direction, owner 2026-10-17); the originating storefront is unchanged in Skin's internal records and callbacks, never sent to the gateway
   - `lineItems`: only when the storefront supplies them (≤ 30). Optional in Authorize.Net's API; Labs does not send them (owner, 2026-10-17)
   - `tax` `{ amount, name: "Tax" }` — only when `taxCents > 0`
   - `shipping` `{ amount, name: "Shipping" }` — only when `shippingCents > 0`
@@ -307,7 +307,7 @@ Manual reverse steps: `supabase/migrations/ROLLBACK-20261017000000_payment_relia
 ## 12) Security / compliance
 
 - Processor and Supabase secrets stay server-side. The Accept.js token is never logged or stored (`[redacted]` in audit rows).
-- Do not falsify product descriptions, storefront source, or order metadata. The Authorize.Net description names the originating storefront.
+- Do not falsify product descriptions, storefront source, or order metadata. The originating storefront stays in Skin's internal records (payment_events, payment sessions, callbacks); per processor direction the Authorize.Net description names the merchant of record only (owner, 2026-10-17).
 - Do not switch to live processing until written approval and production sign-off (and then via the three variables in §1).
 
 ## 13) Environment variables (Vanta Skin)
