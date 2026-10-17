@@ -60,3 +60,19 @@ test('the deployment keeps the storefront and the functions, and drops repositor
     assert.doesNotMatch(fs.readFileSync(path.join(ROOT, html), 'utf8'), /payment-embed-parent/, html);
   }
 });
+
+// The charge path waits up to 20 s on the gateway and then persists the
+// answer; the platform default must not cut that short (audit A L7). The
+// cron schedules are unchanged.
+test('vercel.json: payment functions get 60 s, crons unchanged byte for byte', () => {
+  const text = fs.readFileSync(path.join(ROOT, 'vercel.json'), 'utf8');
+  assert.ok(text.includes('    { "path": "/api/payments/sync-retry", "schedule": "*/10 * * * *" },\n'));
+  assert.ok(text.includes('    { "path": "/api/payments/maintenance", "schedule": "17 7 * * *" }\n'));
+  const config = JSON.parse(text);
+  assert.deepEqual(config.crons, [
+    { path: '/api/payments/sync-retry', schedule: '*/10 * * * *' },
+    { path: '/api/payments/maintenance', schedule: '17 7 * * *' },
+  ]);
+  assert.deepEqual(config.functions, { 'api/payments/*.js': { maxDuration: 60 } });
+  assert.ok(fs.readdirSync(path.join(ROOT, 'api/payments')).includes('charge.js'));
+});
