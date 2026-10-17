@@ -6,6 +6,18 @@ function isUniqueViolation(error) {
   return !!error && String(error.code) === UNIQUE_VIOLATION;
 }
 
+// Columns added by 20261017003000_payment_avs_cvv_codes.sql. Until that
+// migration is applied, PostgREST refuses an insert naming them (PGRST204);
+// the event is then stored without them rather than lost.
+const VERIFICATION_COLUMNS = ['avs_result_code', 'cvv_result_code'];
+
+function isMissingVerificationColumn(error) {
+  if (!error) return false;
+  const message = String(error.message || '');
+  return (String(error.code) === 'PGRST204' || String(error.code) === '42703')
+    && VERIFICATION_COLUMNS.some((column) => message.includes(column));
+}
+
 function createSupabase(config) {
   return createClient(config.supabase.url, config.supabase.serviceRoleKey, {
     auth: { persistSession: false },
@@ -101,7 +113,12 @@ function createStore(client) {
 
     // Duplicate charge rows (same idempotency_key) are ignored.
     async recordPaymentEvent(event) {
-      const { error } = await client.from('payment_events').insert(event);
+      let { error } = await client.from('payment_events').insert(event);
+      if (isMissingVerificationColumn(error)) {
+        const rest = { ...event };
+        for (const column of VERIFICATION_COLUMNS) delete rest[column];
+        ({ error } = await client.from('payment_events').insert(rest));
+      }
       if (error) {
         if (isUniqueViolation(error)) return { inserted: false };
         throw new Error(`Unable to store payment event: ${error.message}`);
@@ -147,6 +164,30 @@ function createStore(client) {
         .maybeSingle();
       if (error) throw new Error(`Unable to lookup charge by idempotency key: ${error.message}`);
       return data || null;
+    },
+
+    // Recent charge records, for matching a gateway capture this service has
+    // no captured record of (see service.js matchUnrecordedCapture): payment
+    // events, and the idempotency claims of charges whose event was never
+    // written. Bounded by `since` and `limit`.
+    async listRecentChargeRecords({ since, limit = 200 }) {
+      const { data: events, error: eventsError } = await client
+        .from('payment_events')
+        .select(PAYMENT_EVENT_COLUMNS)
+        .eq('action', 'charge')
+        .gte('created_at', since)
+        .order('created_at', { ascending: false })
+        .limit(limit);
+      if (eventsError) throw new Error(`Unable to list recent charge events: ${eventsError.message}`);
+      const { data: claims, error: claimsError } = await client
+        .from('payment_idempotency')
+        .select('idempotency_key, status, created_at')
+        .eq('endpoint', '/api/payments/charge')
+        .gte('created_at', since)
+        .order('created_at', { ascending: false })
+        .limit(limit);
+      if (claimsError) throw new Error(`Unable to list recent charge claims: ${claimsError.message}`);
+      return { events: events || [], claims: claims || [] };
     },
 
     // First write wins; a redelivered notification is reported as a duplicate.

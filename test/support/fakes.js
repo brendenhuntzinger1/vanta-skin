@@ -177,6 +177,19 @@ function createFakeStore() {
       const row = db.paymentEvents.find((e) => e.action === 'charge' && e.idempotency_key === key);
       return row ? { ...row } : null;
     },
+    async listRecentChargeRecords({ since, limit = 200 }) {
+      log.push('listRecentChargeRecords');
+      maybeFail('listRecentChargeRecords');
+      const sinceMs = Date.parse(since);
+      const recent = (row) => Date.parse(row.created_at || '') >= sinceMs;
+      return {
+        events: db.paymentEvents.filter((e) => e.action === 'charge' && recent(e)).slice(0, limit).map((e) => ({ ...e })),
+        claims: [...db.idempotency.entries()]
+          .filter(([k, row]) => k.startsWith('/api/payments/charge|') && recent(row))
+          .slice(0, limit)
+          .map(([k, row]) => ({ idempotency_key: k.slice('/api/payments/charge|'.length), status: row.status, created_at: row.created_at })),
+      };
+    },
     async recordWebhookEvent(evt) {
       log.push('recordWebhookEvent');
       maybeFail('recordWebhookEvent');
