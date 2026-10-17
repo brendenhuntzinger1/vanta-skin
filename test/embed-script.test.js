@@ -1,69 +1,10 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const vm = require('node:vm');
-const { EMBED_SCRIPT } = require('../api/_lib/embed-page');
+const { harness, LABS, SESSION_ID, TOKEN } = require('./support/embed-harness');
 
-// Runs the card frame's real script against a minimal fake browser: the
-// fields, the parent window, location/history, fetch (session-validate) and
-// Accept.js. Each test drives it the way the Labs page and the shopper do.
-
-const TOKEN = `vps_${'b'.repeat(64)}`;
-const SESSION_ID = 'c'.repeat(24);
-const LABS = 'https://vantalabsresearch.com';
-
-function harness({ url = `https://pay.vanta.skin/api/payments/embed#session=${TOKEN}`, acceptResult } = {}) {
-  const fields = {};
-  const el = (id) => {
-    if (!fields[id]) {
-      fields[id] = { id, value: '', hidden: true, textContent: '', className: '', listeners: {}, addEventListener(type, fn) { this.listeners[type] = fn; } };
-    }
-    return fields[id];
-  };
-  const parent = { posted: [], postMessage(message, targetOrigin) { this.posted.push({ message, targetOrigin }); } };
-  const windowListeners = {};
-  const location = new URL(url);
-  const replaced = [];
-  const fetches = [];
-  const dispatched = [];
-  const win = {
-    parent,
-    location: { search: location.search, hash: location.hash, pathname: location.pathname },
-    history: { replaceState(_s, _t, next) { replaced.push(next); } },
-    addEventListener(type, fn) { windowListeners[type] = fn; },
-    Accept: {
-      dispatchData(request, cb) {
-        dispatched.push(request);
-        cb(acceptResult || { messages: { resultCode: 'Ok', message: [] }, opaqueData: { dataDescriptor: 'COMMON.ACCEPT.INAPP.PAYMENT', dataValue: 'tok' } });
-      },
-    },
-  };
-  const context = {
-    window: win,
-    document: { getElementById: el, createElement: () => ({}), head: { appendChild() {} } },
-    URLSearchParams,
-    history: win.history,
-    location: win.location,
-    fetch: async (path, init) => {
-      fetches.push({ path, body: JSON.parse(init.body) });
-      return {
-        status: 200,
-        json: async () => ({ ok: true, sessionId: SESSION_ID, embedOrigin: LABS, authnet: { apiLoginId: 'login', clientKey: 'client', sandbox: true } }),
-      };
-    },
-    Promise,
-    Error,
-  };
-  vm.createContext(context);
-  vm.runInContext(EMBED_SCRIPT, context);
-  const settle = () => new Promise((resolve) => setImmediate(resolve));
-  return {
-    fields, parent, fetches, replaced, dispatched, settle,
-    message: (data, { origin = LABS, source = parent } = {}) => windowListeners.message && windowListeners.message({ data, origin, source }),
-    fill(card) {
-      for (const [id, value] of Object.entries(card)) el(id).value = value;
-    },
-  };
-}
+// The fake browser lives in test/support/embed-harness.js: it runs the card
+// frame's real script with the fields, the parent window, location/history,
+// fetch (session-validate), timers, Web Crypto and Accept.js.
 
 const CARD = { 'card-number': '4111111111111111', 'card-exp-month': '12', 'card-exp-year': '2030', 'card-code': '123' };
 const submit = { type: 'vanta:pay:submit', sessionId: SESSION_ID };
