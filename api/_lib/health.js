@@ -2,6 +2,9 @@ const { randomBytes, randomUUID } = require('node:crypto');
 const { hmacMaxSkewSeconds, loadHmacSecrets, loadLabsSyncConfig, resolveAuthnetMode } = require('./config');
 const { verifyRequestSignature } = require('./security');
 const { signedLabsPost } = require('./sync');
+const gatewayCheck = require('./gateway-check');
+
+const defaultGatewayLimiter = gatewayCheck.gatewayCheckLimiter();
 
 // GET /api/payments/health — a read-only readiness check that proves the
 // shared secrets match without either side revealing them:
@@ -47,7 +50,12 @@ async function checkLabsCallback(labsSync, sandbox, postToLabs) {
   }
 }
 
-async function runHealthCheck(req, { probeDatabase: probe = probeDatabase, postToLabs = signedLabsPost } = {}) {
+async function runHealthCheck(req, {
+  probeDatabase: probe = probeDatabase,
+  postToLabs = signedLabsPost,
+  runGatewayCheck = gatewayCheck.runGatewayCheck,
+  gatewayLimiter = defaultGatewayLimiter,
+} = {}) {
   let secrets;
   try {
     secrets = loadHmacSecrets();
@@ -82,6 +90,16 @@ async function runHealthCheck(req, { probeDatabase: probe = probeDatabase, postT
     }
   }
 
+  // ?gateway=1 (and &ping=1): the sandbox credential check in
+  // gateway-check.js. Signed requests only (above), one per window.
+  const wantsGateway = /[?&]gateway=1(&|$)/.test(String(req.url || ''));
+  let gateway;
+  if (wantsGateway) {
+    const slot = gatewayLimiter.take();
+    if (!slot.allowed) return { statusCode: 429, body: { ok: false, error: 'rate_limited', retryAfterSeconds: slot.retryAfterSeconds } };
+    gateway = await runGatewayCheck({ ping: /[?&]ping=1(&|$)/.test(String(req.url || '')) });
+  }
+
   const wantsCallback = /[?&]callback=1(&|$)/.test(String(req.url || ''));
   const labsCallback = wantsCallback
     ? await checkLabsCallback(loadLabsSyncConfig(), sandbox, postToLabs)
@@ -102,6 +120,7 @@ async function runHealthCheck(req, { probeDatabase: probe = probeDatabase, postT
         database,
         labsCallback,
       },
+      ...(gateway ? { gateway } : {}),
     },
   };
 }

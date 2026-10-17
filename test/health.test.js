@@ -123,3 +123,32 @@ test('?callback=1 without callback configuration says so', async () => {
     assert.equal(result.body.checks.labsCallback, 'not_configured');
   });
 });
+
+test('?gateway=1 runs the sandbox gateway check only for a signed request, once per window', async () => {
+  const { gatewayCheckLimiter } = require('../api/_lib/gateway-check');
+  await withEnv(baseEnv, async () => {
+    const calls = [];
+    const runGatewayCheck = async (opts) => { calls.push(opts.ping); return { ok: true, checks: { authenticate: { ok: true, code: 'I00001' } } }; };
+    const limiter = gatewayCheckLimiter({ windowMs: 60000 });
+
+    const unsigned = await runHealthCheck({ method: 'GET', url: '/api/payments/health?gateway=1', headers: {} }, { runGatewayCheck, gatewayLimiter: limiter });
+    assert.equal(unsigned.statusCode, 401);
+    assert.equal(calls.length, 0);
+
+    const first = await runHealthCheck(signedGet('/api/payments/health?gateway=1&ping=1'), { runGatewayCheck, gatewayLimiter: limiter });
+    assert.equal(first.statusCode, 200);
+    assert.deepEqual(first.body.gateway, { ok: true, checks: { authenticate: { ok: true, code: 'I00001' } } });
+    assert.deepEqual(calls, [true]);
+
+    const second = await runHealthCheck(signedGet('/api/payments/health?gateway=1'), { runGatewayCheck, gatewayLimiter: limiter });
+    assert.equal(second.statusCode, 429);
+    assert.equal(second.body.ok, false);
+    assert.ok(second.body.retryAfterSeconds > 0);
+    assert.equal(calls.length, 1);
+
+    // A plain health check is never rate-limited by the gateway window.
+    const plain = await runHealthCheck(signedGet(), { runGatewayCheck, gatewayLimiter: limiter });
+    assert.equal(plain.statusCode, 200);
+    assert.equal(plain.body.gateway, undefined);
+  });
+});
