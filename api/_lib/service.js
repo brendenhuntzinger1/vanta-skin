@@ -195,25 +195,57 @@ function parsePayload(rawBody) {
   return payload;
 }
 
-// The Accept.js nonce is single-use and short-lived, but it is a payment
-// credential all the same; it is not kept in payment_events.
-// The Accept.js nonce and the payment-session bearer token are credentials;
-// neither is kept in payment_events.request_payload.
+// What payment_events.request_payload keeps: an allowlist, not a redaction.
+// Labs is the system of record for the customer, and Authorize.Net holds the
+// billing details it was sent, so Skin keeps the order, amounts and references
+// that reconciliation, refunds and disputes read, plus the NAMES of the
+// customer fields it forwarded (which categories reached the processor), never
+// their values (data-exposure audit 2026-10-17, M2). The Accept.js nonce and
+// the payment-session token are credentials and stay redacted. Anything a
+// caller adds later is dropped until it is listed here.
+const STORED_PAYLOAD_FIELDS = [
+  'orderId', 'attemptNo', 'originStorefront', 'transactionId', 'amountCents', 'currency',
+  'capture', 'requireSandbox', 'shippingCents', 'taxCents',
+];
+
+// The customer fields buildChargeRequest forwards to Authorize.Net
+// (customer.email; billTo.*, with customer.phone as billTo.phoneNumber).
+const FORWARDED_CUSTOMER_FIELDS = [
+  ['customer', 'email'], ['customer', 'phone'],
+  ['billTo', 'firstName'], ['billTo', 'lastName'], ['billTo', 'address'], ['billTo', 'city'],
+  ['billTo', 'state'], ['billTo', 'zip'], ['billTo', 'country'],
+];
+
+function sentCustomerFieldNames(payload) {
+  return FORWARDED_CUSTOMER_FIELDS
+    .filter(([group, field]) => {
+      const value = payload[group] && typeof payload[group] === 'object' ? payload[group][field] : undefined;
+      return typeof value === 'string' && value.trim() !== '';
+    })
+    .map(([group, field]) => `${group}.${field}`);
+}
+
 function redactPaymentPayload(payload) {
   if (!payload) return payload;
-  let redacted = payload;
-  if (payload.opaqueData?.dataValue) {
-    redacted = { ...redacted, opaqueData: { ...redacted.opaqueData, dataValue: '[redacted]' } };
+  const stored = {};
+  for (const field of STORED_PAYLOAD_FIELDS) {
+    if (payload[field] !== undefined) stored[field] = payload[field];
   }
-  if (payload.paymentSession) {
-    redacted = { ...redacted, paymentSession: '[redacted]' };
+  if (payload.opaqueData) {
+    stored.opaqueData = { dataDescriptor: payload.opaqueData.dataDescriptor, dataValue: '[redacted]' };
   }
-  return redacted;
+  if (payload.paymentSession) stored.paymentSession = '[redacted]';
+  if (Array.isArray(payload.lineItems)) stored.lineItemCount = payload.lineItems.length;
+  const sent = sentCustomerFieldNames(payload);
+  if (sent.length) stored.sentCustomerFields = sent;
+  return stored;
 }
 
 // ---------------------------------------------------------------------------
 // Authentication
 // ---------------------------------------------------------------------------
+
+const AUTH_REFUSED = 'Request could not be authenticated';
 
 async function authenticate(req, rawBody, d) {
   let config;
@@ -224,11 +256,15 @@ async function authenticate(req, rawBody, d) {
     throw unavailable('Payment service is not configured');
   }
 
+  // The caller is told only that it was refused: which check failed (key id,
+  // timestamp, signature, nonce) would help someone probing the endpoint, so
+  // the reason goes to the log (data-exposure audit 2026-10-17, L2).
   let signed;
   try {
     signed = verifyRequestSignature(config, req, rawBody);
   } catch (error) {
-    throw new BridgeError({ statusCode: 401, outcome: 'invalid', message: error.message });
+    d.log('auth_rejected', { reason: error.message });
+    throw new BridgeError({ statusCode: 401, outcome: 'invalid', message: AUTH_REFUSED });
   }
 
   let store;
@@ -241,7 +277,8 @@ async function authenticate(req, rawBody, d) {
     throw unavailable('Payment records are temporarily unavailable');
   }
   if (!fresh) {
-    throw new BridgeError({ statusCode: 409, outcome: 'invalid', message: 'Replay detected for nonce' });
+    d.log('auth_rejected', { reason: 'replayed nonce' });
+    throw new BridgeError({ statusCode: 409, outcome: 'invalid', message: AUTH_REFUSED });
   }
   return { config, store, signed };
 }
@@ -429,7 +466,7 @@ function toErrorResponse(error, { operation = 'charge' } = {}) {
     };
     return { statusCode: error.statusCode, body };
   }
-  if (operation === 'webhook' || operation === 'reconcile' || operation === 'sync-retry') {
+  if (operation === 'webhook' || operation === 'reconcile' || operation === 'sync-retry' || operation === 'maintenance') {
     return { statusCode: 500, body: { ok: false, outcome: operation === 'reconcile' ? 'pending' : undefined, message: 'internal_error' } };
   }
   return {
@@ -820,7 +857,7 @@ async function handleReversal(action, req, rawBody, deps) {
       card_last4: action === 'refund' ? cardLast4From(payload.cardNumberMasked) : null,
       ref_id: refId,
       idempotency_key: idempotencyKey,
-      request_payload: payload,
+      request_payload: redactPaymentPayload(payload),
       response_payload: gw?.raw || { outcome, reason: gw?.reason || null },
     }));
 
@@ -1295,6 +1332,36 @@ async function handleReconcile(req, rawBody, deps) {
 // Outbox retry
 // ---------------------------------------------------------------------------
 
+// Daily retention purge (Vercel Cron, `Authorization: Bearer $CRON_SECRET`).
+// The policy itself is purge_payment_bridge_data() in SQL.
+async function runDataRetention(cronAuthorization, deps) {
+  const d = resolveDeps(deps);
+  let config;
+  try {
+    config = d.loadConfig();
+  } catch (error) {
+    d.log('config_error', { code: error?.code || 'config_error' });
+    throw unavailable('Payment service is not configured');
+  }
+  const { cronSecret } = config.labsSync;
+  if (!cronSecret) throw unavailable('Maintenance is not configured', { retryable: false });
+  const authorised = safeEqualHex(digestHex(String(cronAuthorization || '')), digestHex(`Bearer ${cronSecret}`));
+  if (!authorised) {
+    d.log('auth_rejected', { reason: 'maintenance bearer mismatch' });
+    throw new BridgeError({ statusCode: 401, outcome: 'invalid', message: AUTH_REFUSED });
+  }
+
+  let purged;
+  try {
+    purged = await d.createStore(config).purgeExpiredPaymentData(d.now());
+  } catch (error) {
+    d.log('retention_error', { message: error?.message });
+    throw unavailable('Payment records are temporarily unavailable');
+  }
+  d.log('retention_purge', purged || {});
+  return { statusCode: 200, body: { ok: true, purged } };
+}
+
 async function retryPendingSyncDeliveries(authTokenFromRequest, deps, { cronAuthorization } = {}) {
   const d = resolveDeps(deps);
   let config;
@@ -1369,6 +1436,7 @@ module.exports = {
   reconcileReversal,
   redactPaymentPayload,
   retryPendingSyncDeliveries,
+  runDataRetention,
   toErrorResponse,
   verifyWebhookPayment,
   withIdempotency,
