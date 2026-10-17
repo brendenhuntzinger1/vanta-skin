@@ -99,6 +99,6 @@ test('buildChargeRequest itemises the real goods and the true storefront', () =>
   assert.equal(json.transactionType, 'authCaptureTransaction');
   assert.equal(json.amount, '46.04');
   assert.equal(json.payment.opaqueData.dataValue, 'tok');
-  assert.equal(json.order.invoiceNumber, 'order-2f5da385-b1b1-');
+  assert.match(json.order.invoiceNumber, /^VS-[0-9A-F]{17}$/);
   assert.equal(json.order.description, 'Vanta Skin | vantalabsresearch.com');
 });

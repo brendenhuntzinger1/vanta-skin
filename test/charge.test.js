@@ -49,7 +49,8 @@ test('captured → 200 with the contract body', async () => {
   assert.equal(res.body.gatewayContacted, true);
   assert.equal(res.body.transactionId, '60212345678');
   assert.equal(res.body.refId, sha256Hex(KEY).slice(0, 20));
-  assert.equal(res.body.invoiceNumber, 'order-2f5da385-b1b1-');
+  assert.equal(res.body.invoiceNumber, require('../api/_lib/authnet').invoiceNumberFor({ orderId: 'order-2f5da385-b1b1-42be-a806-80adb74205f4' }));
+  assert.match(res.body.invoiceNumber, /^VS-[0-9A-F]{17}$/);
   assert.equal(res.body.authCode, 'ABC123');
   assert.equal(res.body.cardLast4, '1111');
   assert.equal(res.body.cardType, 'Visa');

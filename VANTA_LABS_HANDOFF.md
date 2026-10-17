@@ -123,7 +123,7 @@ without it are refused (400 `invalid`).
   - `transactionType`: `authCaptureTransaction`
   - `amount`: `amountCents / 100`, two decimals
   - `payment.opaqueData`: `dataDescriptor`, `dataValue`
-  - `order.invoiceNumber`: the storefront's `orderId` (schema-truncated to 20 chars), exactly as recorded on the Labs order. Never rebranded or hashed.
+  - `order.invoiceNumber`: `VS-` + the first 17 hex digits (upper case) of SHA-256(`orderId`), exactly 20 characters. Deterministic: reconciliation recomputes it from `orderId`, and the charge response returns it as `invoiceNumber` so Labs records it on the attempt. The order id stays linked to the charge in `payment_events`, `payment_idempotency` and Labs' `payment_bridge_attempts`. Reconciliation also matches the order-id invoice used by earlier builds.
   - `order.description`: `<AUTHNET_MERCHANT_DESCRIPTOR> | <originStorefront>` — names the merchant of record and the true originating storefront
   - `lineItems`: the real goods (sku/name/description/quantity/unit price), when supplied (≤ 30)
   - `tax` `{ amount, name: "Tax" }` — only when `taxCents > 0`
@@ -292,8 +292,12 @@ run it from a cron.
 - `authnet_webhook_events` — webhook ledger incl. `verification`
 - `payment_order_sync_events` — callback outbox incl. `next_attempt_at` and `dead`
 
-Apply `supabase/migrations/20261017000000_payment_reliability.sql` **before**
-deploying this code (the code fails closed — 503, not charged — without it).
+- `payment_sessions` — embedded-form sessions (token hash, order, amount, storefront, parent origin, expiry, consumed_at)
+
+Apply `supabase/migrations/20261016003000_payment_sessions.sql`,
+`20261017000000_payment_reliability.sql` and
+`20261017001000_payment_sessions_hardening.sql` **before** deploying this code
+(the code fails closed — 503, not charged — without them).
 Manual reverse steps: `supabase/migrations/ROLLBACK-20261017000000_payment_reliability.sql`.
 `anon` and `authenticated` have no privileges on the payment tables.
 
@@ -368,25 +372,33 @@ Accept.js is supported in this configuration:
    `assets/js/payment-embed-parent.js` (copy/adapt into the Labs codebase).
 4. The iframe validates the session via `POST /api/payments/session-validate`
    (browser-facing; token is the bearer credential) and renders the card form.
-5. On submit (in-iframe button, or a `vanta:pay:submit` message from the
-   parent — wire the existing Place Order button to it), the iframe tokenizes
-   the card with Accept.js and posts `vanta:pay:tokenized` with `opaqueData`
-   to the parent.
+5. The frame has no Pay button of its own: the checkout's Pay button posts
+   `vanta:pay:submit`, and Enter in a card field posts
+   `vanta:pay:submit-request` so the checkout runs that same action. The frame
+   then tokenizes with Accept.js and posts `vanta:pay:tokenized` with
+   `opaqueData`, or `vanta:pay:error` with Accept.js's `code` (E_WC_05 …,
+   never card data or raw text) for the checkout to word.
 6. Labs checkout sends `opaqueData` + `paymentSession` to its backend, which
    calls `POST /api/payments/charge` as before (HMAC + idempotency). The
    charge re-validates the session (exact order/amount/storefront match) and
    consumes it atomically before the gateway call. A session rejection is a
    definitive 400/409 with `gatewayContacted: false`, never a 502.
+7. A session is spent by the first charge that uses it, whatever the answer.
+   After any charge answer that returns the shopper to the form (decline,
+   retryable failure), the checkout opens a **new** session and frame.
 
 ### Cross-origin messaging contract
 
 - Messages parent → iframe and iframe → parent always use an explicit target
   origin (the server-approved `embedOrigin`), never a wildcard.
-- Receivers check `event.origin` for an exact match before reading anything.
+- Receivers check `event.origin` for an exact match before reading anything;
+  the parent also checks `event.source` is its own iframe, and charges only a
+  token it asked for.
 - Every message carries `sessionId` (first 24 hex chars of the token's
   SHA-256, computable by both sides); mismatched messages are dropped.
-- Message types: `vanta:pay:ready`, `vanta:pay:tokenized` (iframe → parent),
-  `vanta:pay:submit` (parent → iframe), `vanta:pay:error` (iframe → parent).
+- Message types: `vanta:pay:ready`, `vanta:pay:tokenized`, `vanta:pay:error`,
+  `vanta:pay:submit-request` (iframe → parent); `vanta:pay:submit`
+  (parent → iframe).
 - `opaqueData` is forwarded to the Labs backend immediately; it is never
   logged or persisted in the browser.
 
@@ -398,6 +410,11 @@ Accept.js is supported in this configuration:
 - `X-Frame-Options` is deliberately not sent (it cannot express a cross-origin
   allowlist; `frame-ancestors` supersedes it in modern browsers).
 - Responses are `cache-control: no-store` with `referrer-policy: no-referrer`.
+- The frame's CSP allows scripts only from its hashed inline bootstrap and the
+  Accept.js hosts, and connections only to itself and the Authorize.net js/api
+  hosts (Accept.js fetches its core library from the js host to verify it).
+- `embed` and `session-validate` answer configuration or database failures
+  with a generic 503; detail goes to the server log only.
 
 ## Health check (no money moves)
 

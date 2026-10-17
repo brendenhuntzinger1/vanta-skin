@@ -24,7 +24,7 @@
 (function () {
   'use strict';
 
-  var MESSAGE_TYPES = ['vanta:pay:ready', 'vanta:pay:tokenized', 'vanta:pay:error'];
+  var MESSAGE_TYPES = ['vanta:pay:ready', 'vanta:pay:tokenized', 'vanta:pay:error', 'vanta:pay:submit-request'];
   var SESSION_ID_RE = /^[0-9a-f]{24}$/;
 
   function deriveSessionId(sessionToken) {
@@ -53,7 +53,8 @@
    * @param {string} options.skinOrigin      Exact Vanta Skin origin, e.g. "https://vanta.skin".
    * @param {function} options.onTokenized   Called with (opaqueData).
    * @param {function} [options.onReady]     Called when the component is ready.
-   * @param {function} [options.onError]     Called with (Error).
+   * @param {function} [options.onError]     Called with (Error), error.code = Accept.js code.
+   * @param {function} [options.onSubmitRequest] Called when Enter is pressed inside the frame.
    */
   function mount(options) {
     var skinOrigin;
@@ -80,6 +81,7 @@
 
       function onMessage(event) {
         if (event.origin !== skinOrigin) return;
+        if (event.source !== iframe.contentWindow) return;
         if (!isValidMessage(event.data, sessionId)) return;
 
         if (event.data.type === 'vanta:pay:ready' && options.onReady) {
@@ -87,7 +89,13 @@
         } else if (event.data.type === 'vanta:pay:tokenized') {
           options.onTokenized(event.data.opaqueData);
         } else if (event.data.type === 'vanta:pay:error' && options.onError) {
-          options.onError(new Error(event.data.message || 'Payment failed'));
+          // `code` is Accept.js's error code (E_WC_05 …); map it to your own words.
+          var error = new Error('Card tokenization failed');
+          error.code = typeof event.data.code === 'string' ? event.data.code : null;
+          options.onError(error);
+        } else if (event.data.type === 'vanta:pay:submit-request' && options.onSubmitRequest) {
+          // Enter pressed in a card field: run the checkout's own Pay action.
+          options.onSubmitRequest();
         }
       }
 

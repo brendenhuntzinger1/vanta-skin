@@ -73,12 +73,19 @@ function refIdFor(idempotencyKey) {
   return createHash('sha256').update(String(idempotencyKey || ''), 'utf8').digest('hex').slice(0, LIMITS.refId);
 }
 
-// The invoice number is the originating storefront's order id, exactly as
-// recorded on the order. Authorize.Net, the acquiring bank and the customer's
-// statement all reconcile against the same identifier, per the written
-// processing approval; it is never rebranded or hashed.
+// Gateway invoice numbers are in the Vanta Skin series: "VS-" and the first
+// 17 hex digits of SHA-256(orderId), 20 characters in all (Authorize.Net's
+// limit). Deterministic, so reconciliation recomputes it from the order id,
+// and the order stays linked to the charge in payment_events, the idempotency
+// record and Labs' own attempt record. The originating storefront and the
+// goods are still named in order.description and the line items.
+const INVOICE_PREFIX = 'VS-';
+
 function invoiceNumberFor(payload) {
-  return cleanText(payload?.orderId, LIMITS.invoiceNumber);
+  const orderId = cleanText(payload?.orderId, 255);
+  if (!orderId) return null;
+  const digest = createHash('sha256').update(orderId, 'utf8').digest('hex').toUpperCase();
+  return `${INVOICE_PREFIX}${digest}`.slice(0, LIMITS.invoiceNumber);
 }
 
 function normalizeRefundCardReference(value) {

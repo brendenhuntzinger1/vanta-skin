@@ -151,8 +151,8 @@ function assertNonNegativeCents(value, field) {
   if (!Number.isInteger(value) || value < 0) throw invalid(`Invalid ${field}`);
 }
 
-// Line items are accepted for older Labs builds, shape-checked, and never sent
-// to Authorize.Net.
+// Line items are shape-checked here and sent to Authorize.Net as the record of
+// the goods sold (buildChargeRequest).
 function assertChargeLineItems(payload) {
   assertNonNegativeCents(payload.shippingCents, 'shippingCents');
   assertNonNegativeCents(payload.taxCents, 'taxCents');
@@ -1074,9 +1074,10 @@ async function reconcileAttempt({ config, store, gateway, now }, payload) {
   }
 
   // 2. The gateway: unsettled first, then batches settled in the last 2 days.
-  // Charges go out under Skin's own invoice (derived from orderId). A number
-  // Labs recorded earlier (legacy order number) is matched too, never instead.
-  const invoiceNumbers = new Set([invoiceNumberFor({ orderId })]);
+  // Charges go out under the VS- invoice derived from orderId. Charges from
+  // earlier builds used the order id itself (cut to 20 characters), and Labs
+  // may send a number it recorded; all are matched, never instead.
+  const invoiceNumbers = new Set([invoiceNumberFor({ orderId }), String(orderId).slice(0, 20)]);
   if (payload.invoiceNumber) invoiceNumbers.add(payload.invoiceNumber);
   const startedMs = Date.parse(payload.attemptStartedAt);
   const known = new Set((payload.knownTransactionIds || []).map(String));

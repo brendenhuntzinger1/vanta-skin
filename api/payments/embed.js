@@ -31,6 +31,11 @@ module.exports = async function handler(req, res) {
     res.setHeader('x-content-type-options', 'nosniff');
     res.end(renderEmbedPage());
   } catch (error) {
-    return setJson(res, error.statusCode || 500, { ok: false, error: error.message });
+    try {
+      console.error(JSON.stringify({ service: 'payment-bridge', event: 'embed_error', code: error?.code || null, message: error?.message || null }));
+    } catch {
+      // ignore
+    }
+    return setJson(res, 503, { ok: false, error: 'Secure card entry is temporarily unavailable' });
   }
 };

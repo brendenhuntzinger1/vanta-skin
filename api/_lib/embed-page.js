@@ -13,10 +13,9 @@ const { buildFrameAncestors } = require('./payment-session');
 const EMBED_STYLE = [
   'body{font-family:system-ui,-apple-system,"Segoe UI",sans-serif;margin:0;padding:12px;color:#1c1a17;background:#fff}',
   'label{display:block;font-size:12px;font-weight:600;margin:8px 0 4px}',
-  'input{box-sizing:border-box;width:100%;padding:8px;border:1px solid #c9c4bb;border-radius:6px;font-size:14px}',
+  'input{box-sizing:border-box;width:100%;padding:10px;border:1px solid #c9c4bb;border-radius:6px;font-size:16px}',
   '.row{display:flex;gap:8px}.row>div{flex:1}',
-  'button{margin-top:12px;width:100%;padding:10px;border:0;border-radius:6px;background:#1c1a17;color:#fff;font-size:14px;cursor:pointer}',
-  'button[disabled]{opacity:.5;cursor:default}',
+  '.sr-submit{position:absolute;left:-9999px;width:1px;height:1px;overflow:hidden}',
   '.status{font-size:12px;margin-top:8px;min-height:16px}',
   '.error{color:#a33}.muted{color:#6b675f}',
 ].join('');
@@ -29,6 +28,7 @@ const EMBED_SCRIPT = `(function () {
 
   var cfg = null;
   var acceptLoading = null;
+  var busy = false;
 
   function status(message, isError) {
     var el = document.getElementById('pay-status');
@@ -53,7 +53,7 @@ const EMBED_SCRIPT = `(function () {
         : 'https://js.authorize.net/v1/Accept.js';
       script.async = true;
       script.onload = function () { resolve(window.Accept); };
-      script.onerror = function () { reject(new Error('Unable to load the secure payment library')); };
+      script.onerror = function () { acceptLoading = null; reject(new Error('Unable to load the secure payment library')); };
       document.head.appendChild(script);
     });
     return acceptLoading;
@@ -76,9 +76,8 @@ const EMBED_SCRIPT = `(function () {
   }
 
   function tokenize() {
-    if (!cfg) return;
-    var button = document.getElementById('pay-submit');
-    button.disabled = true;
+    if (!cfg || busy) return;
+    busy = true;
     status('Encrypting card details…', false);
 
     loadAcceptJs(cfg.authnet.sandbox)
@@ -92,8 +91,10 @@ const EMBED_SCRIPT = `(function () {
             cardData: readCard()
           }, function (response) {
             if (response.messages.resultCode === 'Error') {
-              var msg = (response.messages.message && response.messages.message[0] && response.messages.message[0].text) || 'Card tokenization failed';
-              reject(new Error(msg));
+              var first = response.messages.message && response.messages.message[0];
+              var err = new Error('Card tokenization failed');
+              err.code = first && typeof first.code === 'string' ? first.code : null;
+              reject(err);
               return;
             }
             resolve(response.opaqueData);
@@ -104,14 +105,15 @@ const EMBED_SCRIPT = `(function () {
         // Raw card data never leaves this iframe: only the Authorize.net
         // opaqueData token is sent to the parent checkout.
         clearCard();
-        button.disabled = false;
-        status('Card secured. You can place your order.', false);
+        busy = false;
+        status('', false);
         postToParent({ type: 'vanta:pay:tokenized', sessionId: cfg.sessionId, opaqueData: opaqueData });
       })
       .catch(function (error) {
-        button.disabled = false;
-        status(error.message, true);
-        postToParent({ type: 'vanta:pay:error', sessionId: cfg.sessionId, message: error.message });
+        busy = false;
+        status('', false);
+        // The parent shows the shopper its own sentence for this code.
+        postToParent({ type: 'vanta:pay:error', sessionId: cfg.sessionId, code: error.code || null });
       });
   }
 
@@ -145,7 +147,6 @@ const EMBED_SCRIPT = `(function () {
           throw new Error(result.json.error || 'This payment session is no longer valid.');
         }
         cfg = result.json;
-        document.getElementById('pay-amount').textContent = (cfg.amountCents / 100).toFixed(2) + ' ' + cfg.currency;
         document.getElementById('pay-form').hidden = false;
         status('', false);
         window.addEventListener('message', onParentMessage);
@@ -156,9 +157,11 @@ const EMBED_SCRIPT = `(function () {
       });
   }
 
+  // Enter in a card field asks the parent checkout to pay, so the checkout's
+  // own Pay button and the keyboard take the same path.
   document.getElementById('pay-form').addEventListener('submit', function (event) {
     event.preventDefault();
-    tokenize();
+    postToParent({ type: 'vanta:pay:submit-request', sessionId: cfg && cfg.sessionId });
   });
 
   init();
@@ -177,7 +180,9 @@ function buildEmbedCsp(allowedOrigins) {
     "default-src 'none'",
     `script-src ${cspHash(EMBED_SCRIPT)} https://jstest.authorize.net https://js.authorize.net`,
     `style-src ${cspHash(EMBED_STYLE)}`,
-    "connect-src 'self' https://apitest.authorize.net https://api.authorize.net",
+    // Accept.js fetches its own core library from the js hosts to check its
+    // integrity before use, then posts card data to the api hosts.
+    "connect-src 'self' https://apitest.authorize.net https://api.authorize.net https://jstest.authorize.net https://js.authorize.net",
     "img-src 'none'",
     "font-src 'none'",
     "base-uri 'none'",
@@ -193,7 +198,7 @@ function renderEmbedPage() {
     '<head>',
     '<meta charset="utf-8">',
     '<meta name="viewport" content="width=device-width, initial-scale=1">',
-    '<title>Vanta Skin Secure Payment</title>',
+    '<title>Secure card details</title>',
     `<style>${EMBED_STYLE}</style>`,
     '</head>',
     '<body>',
@@ -207,7 +212,7 @@ function renderEmbedPage() {
     '<div><label for="card-code">Security code</label><input id="card-code" inputmode="numeric" autocomplete="cc-csc" required></div>',
     '<div><label for="card-zip">Billing ZIP</label><input id="card-zip" inputmode="numeric" autocomplete="postal-code" required></div>',
     '</div>',
-    '<button id="pay-submit" type="submit">Secure card for <span id="pay-amount"></span></button>',
+    '<button class="sr-submit" type="submit" tabindex="-1" aria-hidden="true">Pay</button>',
     '</form>',
     '<p id="pay-status" class="status muted" role="status">Loading secure payment…</p>',
     `<script>${EMBED_SCRIPT}</script>`,

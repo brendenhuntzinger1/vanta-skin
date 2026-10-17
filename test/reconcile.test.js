@@ -159,18 +159,24 @@ test('reconcile refuses when live is requested but not approved', async () => {
   assert.equal(res.statusCode, 503);
 });
 
-// The charge goes to Authorize.Net under the storefront's order id as the
-// invoice (schema-truncated to 20 chars). Labs may still send a legacy order
-// number it recorded earlier. Both must match: a miss becomes not_found after
-// 30 minutes and would invite the customer to pay again.
-test('a lost charge is found under the order-id invoice even when Labs sends its legacy order number', async () => {
+// The charge goes to Authorize.Net under the VS- invoice derived from the
+// order id. Labs may send another number it recorded, and earlier builds used
+// the order id itself (cut to 20 characters). All must match: a miss becomes
+// not_found after 30 minutes and would invite the customer to pay again.
+test('a lost charge is found under the VS- invoice even when Labs sends its legacy order number', async () => {
   const { invoiceNumberFor } = require('../api/_lib/authnet');
   const invoice = invoiceNumberFor({ orderId: ORDER });
-  assert.equal(invoice, ORDER.slice(0, 20));
+  assert.match(invoice, /^VS-[0-9A-F]{17}$/);
   const ctx = ctxWith({ unsettled: [tx({ invoiceNumber: invoice })] });
   const res = await reconcile(ctx, body({ invoiceNumber: 'VL-10042' }));
   assert.equal(res.body.outcome, 'captured');
   assert.equal(res.body.transactionId, '60212345678');
+});
+
+test('a charge made by an earlier build under the order-id invoice is still found', async () => {
+  const ctx = ctxWith({ unsettled: [tx({ invoiceNumber: ORDER.slice(0, 20) })] });
+  const res = await reconcile(ctx, body());
+  assert.equal(res.body.outcome, 'captured');
 });
 
 test('a charge recorded under a legacy invoice is still found by the recorded number', async () => {

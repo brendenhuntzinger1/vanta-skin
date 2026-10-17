@@ -96,7 +96,7 @@ test('processor requests preserve originating-storefront records', () => {
   const key = `vskin:charge:${payload.orderId}:2`;
   const charge = JSON.stringify(wire(buildChargeRequest(config, payload, { idempotencyKey: key })));
   assert.equal(charge.includes('vantalabsresearch.com'), true);
-  assert.equal(charge.includes(payload.orderId.slice(0, 20)), true);
+  assert.equal(charge.includes(invoiceNumberFor(payload)), true);
   assert.equal(charge.includes('BPC-157'), true);
 
   const reversals = [
@@ -121,16 +121,22 @@ test('charge request: refId is the first 20 hex chars of sha256(idempotency key)
   assert.equal(viaKey.refId, request.refId);
 });
 
-// The invoice number is the originating storefront's order id (schema limit
-// 20 chars), so Authorize.Net, the acquiring bank and the statement all
-// reconcile against the same identifier. It is never rebranded or hashed.
-test('charge request: invoice number is the storefront order id', () => {
-  const invoice = build(fullPayload()).transactionRequest.order.invoiceNumber;
-  assert.equal(invoice, fullPayload().orderId.slice(0, 20));
-  assert.equal(invoice, invoiceNumberFor({ orderId: fullPayload().orderId }));
-  assert.equal(invoice.length <= LIMITS.invoiceNumber, true);
-  assert.equal(invoiceNumberFor({ orderId: 'order-abc' }), 'order-abc');
+// Gateway invoice numbers are the VS- series: "VS-" + the first 17 hex digits
+// of sha256(orderId), exactly 20 characters (the schema limit). Deterministic,
+// so reconciliation recomputes it from the order id.
+test('charge request: invoice number is VS- plus 17 hex digits of sha256(orderId)', () => {
+  const payload = fullPayload();
+  const invoice = build(payload).transactionRequest.order.invoiceNumber;
+  assert.equal(invoice, `VS-${sha256Hex(payload.orderId).toUpperCase().slice(0, 17)}`);
+  assert.match(invoice, /^VS-[0-9A-F]{17}$/);
+  assert.equal(invoice.length, LIMITS.invoiceNumber);
+  assert.equal(invoice, invoiceNumberFor({ orderId: payload.orderId }));
+  // The same order always gets the same invoice; another order never does.
+  assert.equal(invoiceNumberFor({ orderId: payload.orderId }), invoiceNumberFor({ orderId: ` ${payload.orderId} ` }));
   assert.notEqual(invoice, invoiceNumberFor({ orderId: 'order-abc' }));
+  // The order number is not what the invoice is derived from.
+  assert.equal(invoiceNumberFor({ ...payload, orderNumber: 'VL-99999' }), invoice);
+  assert.equal(invoiceNumberFor({}), null);
 });
 
 test('charge request: minimal payload sends only the required fields', () => {

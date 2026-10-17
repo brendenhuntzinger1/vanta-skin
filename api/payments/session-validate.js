@@ -35,6 +35,13 @@ module.exports = async function handler(req, res) {
     return setJson(res, 200, buildPublicSessionPayload(record, config.authnet, clientKey));
   } catch (error) {
     if (error.message === 'Invalid payment session token') return invalid();
-    return setJson(res, error.statusCode || 400, { ok: false, error: error.message });
+    // The browser gets a generic answer; configuration and database detail
+    // (variable names, Supabase errors) stays in the server log.
+    try {
+      console.error(JSON.stringify({ service: 'payment-bridge', event: 'session_validate_error', code: error?.code || null, message: error?.message || null }));
+    } catch {
+      // ignore
+    }
+    return setJson(res, 503, { ok: false, error: 'Secure card entry is temporarily unavailable' });
   }
 };
