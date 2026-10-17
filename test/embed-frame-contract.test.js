@@ -236,7 +236,7 @@ test('spaces in the card number are removed before Accept.js', async () => {
   h.message(submit);
   await h.settle();
   assert.equal(h.dispatched[0].cardData.cardNumber, '4111111111111111');
-  assert.deepEqual(h.posted('vanta:pay:tokenized')[0].message, { type: 'vanta:pay:tokenized', sessionId: SESSION_ID, opaqueData: OK_TOKEN });
+  assert.deepEqual(h.posted('vanta:pay:tokenized')[0].message, { type: 'vanta:pay:tokenized', sessionId: SESSION_ID, opaqueData: OK_TOKEN, postalCode: '78701' });
 });
 
 test('no message in any path carries card data, the session token or internal text', () => {
@@ -245,8 +245,13 @@ test('no message in any path carries card data, the session token or internal te
   for (const h of everything) {
     for (const { message, targetOrigin } of h.parent.posted) {
       assert.notEqual(targetOrigin, '*');
-      for (const key of Object.keys(message)) assert.ok(allowedKeys.has(key), key);
-      const text = JSON.stringify(message);
+      // The billing ZIP (address data, not card data) rides only with the
+      // token, for the charge's billTo.zip. No other message carries it.
+      const tokenized = message.type === 'vanta:pay:tokenized';
+      for (const key of Object.keys(message)) assert.ok(allowedKeys.has(key) || (tokenized && key === 'postalCode'), key);
+      const { postalCode, ...rest } = message;
+      if (tokenized) assert.match(String(postalCode), /^(\d{5}(-\d{4})?|[A-Z]\d[A-Z] \d[A-Z]\d)$/);
+      const text = JSON.stringify(tokenized ? rest : message);
       for (const secret of ['4111', TOKEN, 'vps_', '2030', '"123"', '78701', 'Invalid or expired', 'unavailable', 'library broken']) {
         assert.equal(text.includes(secret), false, `${secret} in ${text}`);
       }

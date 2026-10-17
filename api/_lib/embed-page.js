@@ -34,7 +34,7 @@ const EMBED_STYLE = [
 //                                                  VS_POSTAL, VS_TOKENIZE_TIMEOUT,
 //                                                  VS_SCRIPT_LOAD (submit with
 //                                                  no Accept.js)
-//  - vanta:pay:tokenized { type, sessionId, opaqueData }
+//  - vanta:pay:tokenized { type, sessionId, opaqueData, postalCode }
 // sessionId is the first 24 hex characters of SHA-256(token), which Labs
 // derives too. No message ever carries card data, the token or server text.
 //
@@ -284,9 +284,12 @@ const EMBED_SCRIPT = `(function () {
           return;
         }
         // Raw card data never leaves this iframe: only the Authorize.net
-        // opaqueData token is sent to the parent checkout.
+        // opaqueData token is sent to the parent checkout, with the billing
+        // ZIP / postal code the shopper typed here (not card data), so the
+        // charge carries the ZIP the card's issuer checks.
+        var postalCode = card.zip;
         clearCard();
-        postToParent({ type: 'vanta:pay:tokenized', sessionId: cfg.sessionId, opaqueData: response.opaqueData });
+        postToParent({ type: 'vanta:pay:tokenized', sessionId: cfg.sessionId, opaqueData: response.opaqueData, postalCode: postalCode });
       });
     } catch (ignored) {
       // The library itself is broken, which the card cannot fix.

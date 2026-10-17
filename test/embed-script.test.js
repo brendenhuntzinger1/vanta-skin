@@ -163,6 +163,11 @@ test('US ZIP and Canadian postal codes are accepted, normalised for Authorize.Ne
     await h.settle();
     assert.equal(h.dispatched.length, 1, typed);
     assert.equal(h.dispatched[0].cardData.zip, sent, typed);
+    // The parent gets the same normalised code with the token, for the
+    // charge's billing ZIP (sandbox transaction 80061153577 was checked
+    // against the checkout ZIP instead of the one typed here).
+    const tokenized = h.parent.posted.find((p) => p.message.type === 'vanta:pay:tokenized');
+    assert.equal(tokenized.message.postalCode, sent, typed);
   }
 });
 
