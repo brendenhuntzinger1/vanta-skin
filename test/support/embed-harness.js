@@ -30,6 +30,9 @@ function metaFrom(html) {
 //   'error'        the script tag fails (blocked, offline)
 //   'hang'         the script never finishes loading
 //   'no-dispatch'  loads but never defines Accept.dispatchData
+//   'core-pending' loads, but AcceptCore.js has not announced itself
+//                  (window.isReady) until h.coreReady(); like the live
+//                  loader, dispatchData is meanwhile a stub answering E_WC_03
 // dispatch:
 //   'ok' | 'error' | 'hang' | 'throw'
 // validate: { status, json } or 'network'
@@ -57,6 +60,7 @@ function harness({
   const dispatched = [];
   const scripts = [];
   const pendingDispatch = [];
+  const stubCalls = [];
   const metas = metaFrom(html);
 
   // Fake clock: timers fire only when a test advances time.
@@ -68,6 +72,11 @@ function harness({
 
   const acceptLib = {
     dispatchData(request, cb) {
+      if (win.isReady !== true) {
+        stubCalls.push(structuredClone(request));
+        cb({ messages: { resultCode: 'Error', message: [{ code: 'E_WC_03', text: 'Accept.js is not loaded correctly' }] } });
+        return;
+      }
       dispatched.push(structuredClone(request));
       if (dispatch === 'throw') throw new Error('library broken');
       if (dispatch === 'hang') { pendingDispatch.push(cb); return; }
@@ -86,6 +95,7 @@ function harness({
     addEventListener(type, fn) { windowListeners[type] = fn; },
     crypto,
     Accept: accept === 'present' ? acceptLib : undefined,
+    isReady: accept === 'present' ? true : undefined,
   };
 
   const document = {
@@ -95,13 +105,16 @@ function harness({
       if (!m || !(m[1] in metas)) return null;
       return { getAttribute: (name) => (name === 'content' ? metas[m[1]] : null) };
     },
-    createElement: (tag) => ({ tag }),
+    createElement: (tag) => ({ tag, parentNode: null }),
     head: {
+      removeChild(script) { script.parentNode = null; },
       appendChild(script) {
+        script.parentNode = document.head;
         scripts.push(script);
-        if (accept === 'load' || accept === 'no-dispatch') {
+        if (accept === 'load' || accept === 'no-dispatch' || accept === 'core-pending') {
           setImmediate(() => {
-            win.Accept = accept === 'load' ? acceptLib : {};
+            win.Accept = accept === 'no-dispatch' ? {} : acceptLib;
+            if (accept === 'load') win.isReady = true;
             if (script.onload) script.onload();
           });
         } else if (accept === 'error') {
@@ -155,7 +168,8 @@ function harness({
   };
 
   return {
-    fields, parent, fetches, replaced, dispatched, scripts, pendingDispatch, settle, advance,
+    fields, parent, fetches, replaced, dispatched, scripts, pendingDispatch, stubCalls, settle, advance, win,
+    coreReady() { win.isReady = true; },
     posted: (type) => parent.posted.filter((p) => p.message.type === type),
     message: (data, { origin = LABS, source = parent } = {}) => windowListeners.message && windowListeners.message({ data, origin, source }),
     fill(card) {

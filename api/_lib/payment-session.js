@@ -121,11 +121,7 @@ function buildPublicSessionPayload(record, authnetConfig, clientKey) {
   return {
     ok: true,
     sessionId: String(record.token_hash || '').slice(0, 24),
-    orderId: record.order_id,
-    amountCents: record.amount_cents,
-    currency: record.currency,
     embedOrigin: record.parent_origin,
-    expiresAt: record.expires_at,
     authnet: {
       apiLoginId: authnetConfig.apiLoginId,
       clientKey: String(clientKey || ''),

@@ -69,6 +69,32 @@ test('a blocked or failed Accept.js load posts failed VS_SCRIPT_LOAD, never a ca
   assert.equal(h.posted('vanta:pay:failed').length, 1);
 });
 
+// The live loader defines Accept.dispatchData at once, but as a stub that
+// answers E_WC_03 until AcceptCore.js sets window.isReady (after the
+// loader's own onload). ready before that failed every first press.
+test('no ready while window.isReady is false even though dispatchData exists; the first press after ready tokenizes', async () => {
+  const h = track(harness({ accept: 'core-pending' }));
+  await h.settle();
+  assert.equal(typeof h.win.Accept.dispatchData, 'function');
+  await h.advance(5000);
+  assert.equal(h.posted('vanta:pay:ready').length, 0);
+  h.fill(CARD);
+  h.message(submit);
+  await h.settle();
+  assert.deepEqual(h.posted('vanta:pay:error').map((p) => p.message.code), ['VS_SCRIPT_LOAD']);
+  assert.equal(h.stubCalls.length, 0, 'the E_WC_03 stub is never called');
+  h.coreReady();
+  await h.advance(50);
+  assert.equal(h.posted('vanta:pay:ready').length, 1);
+  h.message(submit);
+  await h.settle();
+  assert.equal(h.stubCalls.length, 0);
+  assert.equal(h.dispatched.length, 1);
+  assert.equal(h.posted('vanta:pay:tokenized').length, 1);
+  assert.deepEqual(h.posted('vanta:pay:error').map((p) => p.message.code), ['VS_SCRIPT_LOAD'], 'no E_WC_03');
+  assert.equal(h.posted('vanta:pay:failed').length, 0);
+});
+
 test('a script that loads without Accept.dispatchData is a load failure', async () => {
   const h = track(harness({ accept: 'no-dispatch' }));
   await h.settle();

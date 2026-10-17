@@ -34,7 +34,8 @@ Skin iframe (where the card is entered), enforced in code:
   `default-src 'none'`; `script-src` = SHA-256 hash of the one inline script +
   `https://jstest.authorize.net https://js.authorize.net` only; `style-src` =
   hash of the one inline style; `connect-src 'self'` + the Authorize.Net
-  js/api hosts; `img-src`/`font-src 'none'`; `base-uri 'none'`;
+  js/api hosts (`api2.authorize.net` is the production tokenization
+  endpoint, `apitest.authorize.net` the sandbox one); `img-src`/`font-src 'none'`; `base-uri 'none'`;
   `form-action 'self'`; `frame-ancestors` = the approved Labs origins.
 - Inventory: exactly two scripts — the inline bootstrap (`EMBED_SCRIPT`,
   hash-pinned, changes only via a reviewed commit) and Accept.js.

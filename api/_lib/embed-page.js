@@ -52,13 +52,19 @@ const EMBED_SCRIPT = `(function () {
   var US_ZIP_RE = /^[0-9]{5}(-[0-9]{4})?$/;
   var CA_POSTAL_RE = /^([ABCEGHJ-NPRSTVXY][0-9][ABCEGHJ-NPRSTV-Z])[ -]?([0-9][ABCEGHJ-NPRSTV-Z][0-9])$/;
   var CARD_SPACES_RE = /[ ]/g;
-  var ACCEPT_LOAD_TIMEOUT_MS = 15000;
+  // Accept.js is only usable once AcceptCore.js, which the loader fetches
+  // itself after its own onload, has announced readiness (window.isReady);
+  // until then dispatchData is a stub that answers E_WC_03. The frame answers
+  // every press before the Labs page's own 30-second tokenize timeout.
+  var ACCEPT_READY_TIMEOUT_MS = 15000;
   var TOKENIZE_TIMEOUT_MS = 20000;
 
   var cfg = null;
-  // idle -> loading -> ready | failed. A load that failed or timed out stays
-  // failed: Labs reloads the card form with a new session.
+  // idle -> loading -> ready | failed. A failed load is reported once
+  // (vanta:pay:failed); a later press tries the loader again.
   var acceptState = 'idle';
+  var acceptScript = null;
+  var acceptGeneration = 0;
   var failedPosted = false;
   var busy = false;
   var tokenSessionId = Promise.resolve(null);
@@ -139,53 +145,59 @@ const EMBED_SCRIPT = `(function () {
   }
 
   function acceptReady() {
-    return !!(window.Accept && typeof window.Accept.dispatchData === 'function');
+    return !!(window.Accept && typeof window.Accept.dispatchData === 'function' && window.isReady === true);
   }
 
-  function onAcceptReady() {
-    if (acceptState !== 'loading') return;
-    acceptState = 'ready';
-    status('', false);
-    postToParent({ type: 'vanta:pay:ready', sessionId: cfg.sessionId });
-  }
-
-  function onAcceptFailed() {
-    if (acceptState !== 'loading') return;
-    acceptState = 'failed';
-    fail('VS_SCRIPT_LOAD');
+  // The loader fetches AcceptCore.js only once, so a load that failed is
+  // thrown away whole and the next attempt starts again from the loader.
+  function discardAcceptJs() {
+    if (acceptScript && acceptScript.parentNode) acceptScript.parentNode.removeChild(acceptScript);
+    acceptScript = null;
+    window.Accept = undefined;
   }
 
   // Loaded as soon as the session is valid, so a blocked or slow library is
   // found before the shopper presses Pay, and ready means the card can
-  // really be tokenized. The script's load event can precede dispatchData,
-  // so it is polled for until the deadline.
-  function preloadAcceptJs(sandbox) {
+  // really be tokenized: window.isReady is polled for until the deadline.
+  // Answers from a load that was given up on are ignored.
+  function loadAcceptJs(sandbox) {
+    var generation = ++acceptGeneration;
     acceptState = 'loading';
-    var deadline = setTimeout(onAcceptFailed, ACCEPT_LOAD_TIMEOUT_MS);
-    function check() {
-      if (acceptState !== 'loading') return;
-      if (acceptReady()) {
-        clearTimeout(deadline);
-        onAcceptReady();
+    function settle(ok) {
+      if (generation !== acceptGeneration || acceptState !== 'loading') return;
+      clearTimeout(deadline);
+      if (ok) {
+        acceptState = 'ready';
+        document.getElementById('pay-form').hidden = false;
+        status('', false);
+        postToParent({ type: 'vanta:pay:ready', sessionId: cfg.sessionId });
         return;
       }
-      setTimeout(check, 100);
+      acceptState = 'failed';
+      discardAcceptJs();
+      fail('VS_SCRIPT_LOAD');
     }
-    if (acceptReady()) {
+    var deadline = setTimeout(function () { settle(false); }, ACCEPT_READY_TIMEOUT_MS);
+    function check() {
+      if (generation !== acceptGeneration || acceptState !== 'loading') return;
+      if (acceptReady()) {
+        settle(true);
+        return;
+      }
+      setTimeout(check, 50);
+    }
+    if (window.Accept) {
       check();
       return;
     }
-    var script = document.createElement('script');
-    script.src = sandbox
+    acceptScript = document.createElement('script');
+    acceptScript.src = sandbox
       ? 'https://jstest.authorize.net/v1/Accept.js'
       : 'https://js.authorize.net/v1/Accept.js';
-    script.async = true;
-    script.onload = check;
-    script.onerror = function () {
-      clearTimeout(deadline);
-      onAcceptFailed();
-    };
-    document.head.appendChild(script);
+    acceptScript.async = true;
+    acceptScript.onload = check;
+    acceptScript.onerror = function () { settle(false); };
+    document.head.appendChild(acceptScript);
   }
 
   // US ZIP as typed; Canadian postal code upper-cased as "A1A 1A1". Null when
@@ -222,8 +234,11 @@ const EMBED_SCRIPT = `(function () {
     if (!cfg || busy) return;
     if (acceptState !== 'ready' || !acceptReady()) {
       // Not a card problem: the parent shows "the secure card form couldn't
-      // load" for this code, never "check your card details".
+      // load" for this code, never "check your card details". After a failed
+      // load the press also starts the loader again; ready follows if it
+      // works this time.
       postError('VS_SCRIPT_LOAD');
+      if (acceptState === 'failed') loadAcceptJs(cfg.authnet.sandbox);
       return;
     }
     var card = readCard();
@@ -344,7 +359,7 @@ const EMBED_SCRIPT = `(function () {
         cfg = json;
         document.getElementById('pay-form').hidden = false;
         window.addEventListener('message', onParentMessage);
-        preloadAcceptJs(cfg.authnet.sandbox);
+        loadAcceptJs(cfg.authnet.sandbox);
       })
       .catch(function (error) {
         fail(error && error.vantaCode ? error.vantaCode : 'VS_UNAVAILABLE');
