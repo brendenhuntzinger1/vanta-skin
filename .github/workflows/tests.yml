@@ -1,0 +1,51 @@
+# The payment bridge's tests, on every pull request and every push to main.
+#
+# Until this file the repository had no CI: a pull request showed only the
+# Vercel deployment check, which builds and deploys whether or not the tests
+# pass. These handlers charge cards, so the suite runs before review, not after.
+#
+# No secrets and no network: the tests stub Authorize.Net, Supabase and Labs
+# (test/support), so a pull request from a fork can run them as-is.
+
+name: Tests
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: tests-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    name: Payment bridge tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          # Vercel's default Node runtime. A major, not "latest", so a Node
+          # release cannot turn this red on its own.
+          node-version: 22
+          cache: npm
+
+      # ci, not install: exactly the lockfile, and it fails if package.json
+      # and the lock have drifted apart.
+      - name: Install
+        run: npm ci
+
+      - name: Tests
+        run: npm test
+
+      # Runtime dependencies only (the SDK, axios, supabase-js). A known high
+      # or critical advisory in what runs in production fails the job.
+      - name: Dependency advisories
+        run: npm audit --omit=dev --audit-level=high
