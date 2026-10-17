@@ -11,11 +11,12 @@ test('buildSyncEventKey for bridge is deterministic', () => {
     source: 'bridge',
     action: 'charge',
     idempotencyKey: 'idem-1',
-    orderId: 'order-1',
     transactionId: 'tx-1',
-    paymentStatus: 'captured',
+    outcome: 'captured',
   });
-  assert.equal(key, 'bridge:charge:idem-1:order-1:tx-1:captured');
+  // Contract §5: bridge:charge:<idempotencyKey>:<transId|none>:<outcome>
+  assert.equal(key, 'bridge:charge:idem-1:tx-1:captured');
+  assert.equal(buildSyncEventKey({ source: 'bridge', action: 'charge', idempotencyKey: 'vskin:charge:o:2', outcome: 'declined' }), 'bridge:charge:vskin:charge:o:2:none:declined');
 });
 
 test('assertLabsSyncConfigured requires endpoint and hmac auth', () => {
