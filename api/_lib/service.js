@@ -703,7 +703,7 @@ async function recordChargeSideEffects(d, config, store, { payload, idempotencyK
     origin_storefront: payload.originStorefront,
     action: 'charge',
     amount_cents: payload.amountCents,
-    auth_amount_cents: moneyMayHaveMoved ? payload.amountCents : null,
+    auth_amount_cents: Number.isInteger(gw?.approvedAmountCents) ? gw.approvedAmountCents : (moneyMayHaveMoved ? payload.amountCents : null),
     currency: 'USD',
     status: CHARGE_PAYMENT_STATUS[gatewayOutcome],
     outcome: gatewayOutcome,
@@ -782,6 +782,52 @@ function buildReversalBody({ action, config, payload, outcome, gw, refId, amount
   };
 }
 
+// Refund / void defence in depth (audit 2026-10-18). Labs checks ownership and
+// the remaining balance before it asks; this service no longer relies on that
+// alone. From its own records it requires that the original transaction:
+//   • is a charge this service captured (or, for a void, captured or held),
+//   • belongs to the requested order and storefront,
+// and, for a refund, that this refund plus every earlier refund that took (or
+// may have taken) money stays within the captured amount; for a void, that
+// the charge was not already voided or partly refunded. A charge this service
+// has no record of is refused: it is reversed from the Authorize.Net
+// dashboard, never on Labs's word alone. The gateway still enforces its own
+// limits (a refund above the settled amount, a void after settlement).
+// Returns a BridgeError, or null when the reversal may proceed.
+const REVERSAL_COUNTS = new Set(['captured', 'held', 'uncertain']);
+
+async function reversalRefusal(store, action, payload, amountCents) {
+  const refuse = (message, reason) => new BridgeError({ statusCode: OUTCOME_STATUS.rejected, outcome: 'rejected', message, retryable: false, reason });
+  let charge;
+  let reversals;
+  try {
+    charge = await store.findPaymentEventByTransaction(payload.transactionId, ['charge']);
+    reversals = charge ? await store.listReversalEvents(payload.transactionId) : [];
+  } catch {
+    return unavailable('Payment records are temporarily unavailable');
+  }
+  if (!charge) return refuse('No charge recorded for this transaction', 'unknown_transaction');
+  if (String(charge.order_id) !== String(payload.orderId)) return refuse('Transaction does not belong to this order', 'order_mismatch');
+  if (String(charge.origin_storefront || '').toLowerCase() !== String(payload.originStorefront).trim().toLowerCase()) {
+    return refuse('Transaction does not belong to this storefront', 'storefront_mismatch');
+  }
+  const eligible = action === 'void' ? ['captured', 'held'] : ['captured'];
+  if (!eligible.includes(charge.outcome)) return refuse(`Charge is ${charge.outcome || 'not captured'}`, 'not_captured');
+
+  const capturedCents = Number.isInteger(charge.auth_amount_cents) ? charge.auth_amount_cents : charge.amount_cents;
+  const taken = reversals.filter((row) => REVERSAL_COUNTS.has(row.outcome));
+  if (action === 'void') {
+    if (taken.some((row) => row.action === 'void')) return refuse('Transaction is already voided', 'already_voided');
+    if (taken.some((row) => row.action === 'refund')) return refuse('Transaction has refunds; it cannot be voided', 'has_refunds');
+    return null;
+  }
+  if (taken.some((row) => row.action === 'void')) return refuse('Transaction is voided', 'already_voided');
+  if (!Number.isInteger(capturedCents) || capturedCents <= 0) return refuse('Captured amount is unknown', 'amount_unknown');
+  const refundedCents = taken.filter((row) => row.action === 'refund').reduce((sum, row) => sum + (Number(row.amount_cents) || 0), 0);
+  if (amountCents <= 0 || refundedCents + amountCents > capturedCents) return refuse('Refund exceeds the captured amount', 'exceeds_captured');
+  return null;
+}
+
 async function handleReversal(action, req, rawBody, deps) {
   const d = resolveDeps(deps);
   const { config, store, signed } = await authenticate(req, rawBody, d);
@@ -825,6 +871,23 @@ async function handleReversal(action, req, rawBody, deps) {
   const endpoint = action === 'refund' ? REFUND_ENDPOINT : VOID_ENDPOINT;
   const refId = refIdFor(idempotencyKey);
   const bodyExtras = { action, orderId: payload.orderId, originalTransactionId: String(payload.transactionId), refId, amountCents, currency: 'USD', sandbox: config.authnet.sandbox };
+
+  // Checked for a new request only: a replay of a key already claimed returns
+  // its stored answer (withIdempotency) and is never counted against itself.
+  // A refusal is not stored, so the same key works once records are fixed.
+  let claimed;
+  try {
+    claimed = await store.findIdempotency(endpoint, idempotencyKey);
+  } catch {
+    throw unavailable('Payment records are temporarily unavailable');
+  }
+  if (!claimed) {
+    const refusal = await reversalRefusal(store, action, payload, amountCents);
+    if (refusal) {
+      d.log('reversal_refused', { action, reason: refusal.reason || null });
+      throw refusal;
+    }
+  }
 
   let gw = null;
   const result = await withIdempotency(

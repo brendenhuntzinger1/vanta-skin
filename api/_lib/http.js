@@ -6,6 +6,24 @@ function setJson(res, status, payload) {
   res.end(JSON.stringify(payload));
 }
 
+// setJson, signed as the answer to `req` when it was a signed bridge request
+// (security.js responseSignatureHeaders). A signing failure never blocks the
+// answer: Labs refuses an unsigned answer and treats the call as uncertain.
+function setSignedJson(req, res, status, payload) {
+  const raw = JSON.stringify(payload);
+  try {
+    const { loadHmacSecrets } = require('./config');
+    const { responseSignatureHeaders } = require('./security');
+    const headers = responseSignatureHeaders(loadHmacSecrets(), req, status, raw);
+    if (headers) for (const [name, value] of Object.entries(headers)) res.setHeader(name, value);
+  } catch {
+    // unsigned
+  }
+  res.statusCode = status;
+  res.setHeader('content-type', 'application/json; charset=utf-8');
+  res.end(raw);
+}
+
 async function readRawBody(req) {
   const chunks = [];
   for await (const chunk of req) chunks.push(chunk);
@@ -32,4 +50,5 @@ module.exports = {
   parseJson,
   readRawBody,
   setJson,
+  setSignedJson,
 };

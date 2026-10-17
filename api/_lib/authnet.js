@@ -368,6 +368,21 @@ function mapGatewayResponse(response) {
   }
 }
 
+// Settlement amount integrity (audit F2, 2026-10-18). An approved
+// createTransaction answer carries no amount of its own: the gateway approves
+// the requested amount in full or declines it. The one exception is a partial
+// authorization (prepaid / split tender, which this service never enables with
+// allowPartialAuth), reported as prePaidCard.approvedAmount or a
+// splitTenderId. Such an approval is never reported as captured: it is held
+// for review with the amount the gateway actually approved.
+function partialApprovalHeld(result, requestedCents) {
+  const tx = result?.raw?.transactionResponse;
+  const approved = centsFromMoney(tx?.prePaidCard?.approvedAmount);
+  const partial = !!tx?.splitTenderId || (approved !== null && approved !== requestedCents);
+  if (result?.outcome !== 'captured' || !partial) return result;
+  return { ...result, outcome: 'held', reason: 'partial_authorization', approvedAmountCents: approved };
+}
+
 function uncertainResult(reason, error) {
   return {
     outcome: 'uncertain',
@@ -484,8 +499,8 @@ function createGateway({ execute, timeoutMs, pageSize = LOOKUP_PAGE_SIZE, maxPag
   }
 
   return {
-    charge(config, payload, { refId } = {}) {
-      return transact(config, buildChargeRequest(config, payload, { refId }), refId);
+    async charge(config, payload, { refId } = {}) {
+      return partialApprovalHeld(await transact(config, buildChargeRequest(config, payload, { refId }), refId), payload.amountCents);
     },
     refund(config, payload, { refId } = {}) {
       return transact(config, buildRefundRequest(config, payload, { refId }), refId);
@@ -585,6 +600,7 @@ module.exports = {
   moneyFromCents,
   normalizeRefundCardReference,
   parseSdkResponse,
+  partialApprovalHeld,
   refIdFor,
   refundTransaction,
   setDefaultExecutor,

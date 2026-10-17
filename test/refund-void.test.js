@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { createFakeGateway, gatewayResult, makeDeps, signedRequest } = require('./support/fakes');
+const { createFakeGateway, gatewayResult, makeDeps, seedCharge, signedRequest } = require('./support/fakes');
 const { REFUND_ENDPOINT, handleRefund, handleVoid, toErrorResponse } = require('../api/_lib/service');
 
 const ORIGINAL = '60212345678';
@@ -25,6 +25,7 @@ const voidTx = (ctx, opts) => call(handleVoid, ctx, { path: '/api/payments/void'
 
 test('refund: new refund transId and the original transId are returned separately', async () => {
   const ctx = makeDeps({ gateway: createFakeGateway({ refund: async () => gatewayResult('captured', { transactionId: REFUND_TX, cardLast4: null, cardType: null }) }) });
+  seedCharge(ctx.store, { order_id: ORDER, authnet_transaction_id: ORIGINAL });
   const res = await refund(ctx, { body: refundBody() });
   assert.equal(res.statusCode, 200);
   assert.equal(res.body.outcome, 'captured');
@@ -33,7 +34,7 @@ test('refund: new refund transId and the original transId are returned separatel
   assert.equal(res.body.originalTransactionId, ORIGINAL);
   assert.equal(res.body.amountCents, 1500);
 
-  const [row] = ctx.store.db.paymentEvents;
+  const row = ctx.store.db.paymentEvents.find((e) => e.action === 'refund');
   assert.equal(row.action, 'refund');
   assert.equal(row.authnet_transaction_id, REFUND_TX);
   assert.equal(row.original_transaction_id, ORIGINAL);
@@ -50,6 +51,7 @@ test('refund: new refund transId and the original transId are returned separatel
 
 test('refund: the gateway is given the masked last-4 reference and the original transId', async () => {
   const ctx = makeDeps({ gateway: createFakeGateway({ refund: async () => gatewayResult('captured', { transactionId: REFUND_TX }) }) });
+  seedCharge(ctx.store, { order_id: ORDER, authnet_transaction_id: ORIGINAL });
   await refund(ctx, { body: refundBody({ cardNumberMasked: '4242' }) });
   const [, payload, opts] = ctx.gateway.calls[0].args;
   assert.equal(payload.cardNumberMasked, '4242');
@@ -76,6 +78,7 @@ test('refund: non-USD currency → 400 invalid', async () => {
 
 test('refund: declined → 402 refund_failed', async () => {
   const ctx = makeDeps({ gateway: createFakeGateway({ refund: async () => gatewayResult('declined', { transactionId: null }) }) });
+  seedCharge(ctx.store, { order_id: ORDER, authnet_transaction_id: ORIGINAL });
   const res = await refund(ctx, { body: refundBody() });
   assert.equal(res.statusCode, 402);
   assert.equal(res.body.paymentStatus, 'refund_failed');
@@ -84,6 +87,7 @@ test('refund: declined → 402 refund_failed', async () => {
 
 test('refund: gateway timeout → 502 uncertain, row uncertain, no callback', async () => {
   const ctx = makeDeps({ gateway: createFakeGateway({ refund: async () => gatewayResult('uncertain') }) });
+  seedCharge(ctx.store, { order_id: ORDER, authnet_transaction_id: ORIGINAL });
   const res = await refund(ctx, { body: refundBody() });
   assert.equal(res.statusCode, 502);
   assert.equal(res.body.outcome, 'uncertain');
@@ -94,6 +98,7 @@ test('refund: gateway timeout → 502 uncertain, row uncertain, no callback', as
 
 test('refund: same key replays, never refunds twice; in-progress key → 409', async () => {
   const ctx = makeDeps({ gateway: createFakeGateway({ refund: async () => gatewayResult('captured', { transactionId: REFUND_TX }) }) });
+  seedCharge(ctx.store, { order_id: ORDER, authnet_transaction_id: ORIGINAL });
   await refund(ctx, { body: refundBody() });
   const again = await refund(ctx, { body: refundBody() });
   assert.equal(again.statusCode, 200);
@@ -107,7 +112,7 @@ test('refund: same key replays, never refunds twice; in-progress key → 409', a
 
 test('void: without amountCents uses the recorded charge amount; callback amount is non-null', async () => {
   const ctx = makeDeps({ gateway: createFakeGateway({ void: async () => gatewayResult('captured', { transactionId: ORIGINAL, cardLast4: null, cardType: null }) }) });
-  ctx.store.db.paymentEvents.push({ action: 'charge', authnet_transaction_id: ORIGINAL, amount_cents: 4604, order_id: ORDER, outcome: 'captured' });
+  seedCharge(ctx.store, { order_id: ORDER, authnet_transaction_id: ORIGINAL });
   const res = await voidTx(ctx, { body: { orderId: ORDER, originStorefront: 'vantalabsresearch.com', transactionId: ORIGINAL } });
   assert.equal(res.statusCode, 200);
   assert.equal(res.body.paymentStatus, 'voided');
@@ -127,6 +132,7 @@ test('void: unknown charge and no amountCents → 400 invalid, no gateway call',
 
 test('void: rejected → 422 void_failed', async () => {
   const ctx = makeDeps({ gateway: createFakeGateway({ void: async () => gatewayResult('rejected') }) });
+  seedCharge(ctx.store, { order_id: ORDER, authnet_transaction_id: ORIGINAL });
   const res = await voidTx(ctx, { body: { orderId: ORDER, originStorefront: 'vantalabsresearch.com', transactionId: ORIGINAL, amountCents: 4604 } });
   assert.equal(res.statusCode, 422);
   assert.equal(res.body.paymentStatus, 'void_failed');

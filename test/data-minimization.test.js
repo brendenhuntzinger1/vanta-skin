@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { chargeBody, createFakeGateway, gatewayResult, makeDeps, signedRequest } = require('./support/fakes');
+const { chargeBody, createFakeGateway, gatewayResult, makeDeps, seedCharge, signedRequest } = require('./support/fakes');
 const { handleCharge, handleRefund, toErrorResponse } = require('../api/_lib/service');
 const { buildChargeRequest } = require('../api/_lib/authnet');
 
@@ -56,11 +56,12 @@ test('a charge stores no customer PII in payment_events.request_payload', async 
 
 test('a refund stores no masked card reference in request_payload (card_last4 keeps it)', async () => {
   const ctx = makeDeps({ gateway: createFakeGateway({ refund: async () => gatewayResult('captured', { transactionId: '60299990001', cardLast4: null, cardType: null }) }) });
+  seedCharge(ctx.store);
   const body = { orderId: 'order-1', originStorefront: 'vantalabsresearch.com', transactionId: '60212345678', amountCents: 1500, currency: 'USD', cardNumberMasked: '1111' };
   const { req, rawBody } = signedRequest({ path: '/api/payments/refund', body, idempotencyKey: 'vskin:refund:order-1:1' });
   const res = await handleRefund(req, rawBody, ctx.deps);
   assert.equal(res.statusCode, 200);
-  const [row] = ctx.store.db.paymentEvents;
+  const row = ctx.store.db.paymentEvents.find((e) => e.action === 'refund');
   assert.deepEqual(row.request_payload, {
     orderId: 'order-1', originStorefront: 'vantalabsresearch.com', transactionId: '60212345678', amountCents: 1500, currency: 'USD',
   });

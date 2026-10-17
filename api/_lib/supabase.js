@@ -138,6 +138,19 @@ function createStore(client) {
       return data || null;
     },
 
+    // Every refund and void recorded against one original transaction.
+    async listReversalEvents(originalTransactionId) {
+      if (!originalTransactionId) return [];
+      const { data, error } = await client
+        .from('payment_events')
+        .select(PAYMENT_EVENT_COLUMNS)
+        .eq('original_transaction_id', String(originalTransactionId))
+        .in('action', ['refund', 'void'])
+        .limit(500);
+      if (error) throw new Error(`Unable to list reversals for transaction: ${error.message}`);
+      return data || [];
+    },
+
     async findPaymentEventByIdempotencyKey(action, idempotencyKey) {
       if (!idempotencyKey || !action) return null;
       const { data, error } = await client
