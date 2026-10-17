@@ -1,0 +1,18 @@
+# Files Vercel must not upload. This repository has no build step, so every
+# uploaded file that is not a function is served publicly from the Skin
+# domain. The storefront pages (*.html), assets/, api/ (the functions),
+# package.json, package-lock.json and vercel.json still deploy.
+# test/deployment-config.test.js pins what is kept and what is dropped.
+
+# Repository notes: audit, handoff, PCI and README documents.
+*.md
+
+# Database migrations, tests and CI configuration.
+/supabase/
+/test/
+/.github/
+/.gitignore
+
+# The Labs-side reference implementation of the frame contract. No Skin
+# page loads it.
+/assets/js/payment-embed-parent.js

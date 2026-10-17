@@ -1,0 +1,9 @@
+{
+  "functions": {
+    "api/payments/*.js": { "maxDuration": 60 }
+  },
+  "crons": [
+    { "path": "/api/payments/sync-retry", "schedule": "*/10 * * * *" },
+    { "path": "/api/payments/maintenance", "schedule": "17 7 * * *" }
+  ]
+}

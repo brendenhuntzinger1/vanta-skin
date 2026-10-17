@@ -1,0 +1,16 @@
+{
+  "name": "vanta-skin-payment-service",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Vanta Skin storefront + Authorize.net payment bridge",
+  "scripts": {
+    "test": "node --test"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "2.118.0",
+    "authorizenet": "1.0.10"
+  },
+  "overrides": {
+    "axios": "1.20.0"
+  }
+}

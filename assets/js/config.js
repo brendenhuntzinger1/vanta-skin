@@ -28,6 +28,11 @@ window.STORE = {
    * When you connect Stripe / Shopify / Square / PayPal, replace the
    * placeholder in checkout.html (look for "PAYMENT PROCESSOR GOES HERE")
    * and implement window.VANTA_PAY(order) to send the order to your processor.
+   * For Authorize.net Accept.js, set authnet.enabled=true and configure
+   * AUTHNET_CLIENT_KEY in your deployment environment.
    */
   paymentsEnabled: false,
+  authnet: {
+    enabled: false,
+  },
 };
