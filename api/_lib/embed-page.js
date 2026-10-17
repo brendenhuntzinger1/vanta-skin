@@ -3,8 +3,8 @@ const { buildFrameAncestors } = require('./payment-session');
 
 // The hosted payment component served by GET /api/payments/embed.
 //
-// The HTML is fully static: the session token is read from the query string
-// inside the iframe and every per-session value arrives via the
+// The HTML is fully static: the session token is read from the URL fragment
+// (#session=…) inside the iframe and every per-session value arrives via the
 // session-validate endpoint, so nothing is ever interpolated into this page
 // and there is no template-injection surface. The inline script and style are
 // locked into the Content-Security-Policy with SHA-256 hashes computed from
@@ -28,6 +28,11 @@ const EMBED_SCRIPT = `(function () {
 
   var SESSION_ID_RE = /^[0-9a-f]{24}$/;
   var TOKEN_RE = /^vps_[0-9a-f]{64}$/;
+  // Billing postal code: US ZIP (12345 or 12345-6789) or Canadian postal code
+  // (A1A 1A1; no D, F, I, O, Q or U, and no W or Z first). The storefront
+  // ships to the US and Canada only.
+  var US_ZIP_RE = /^[0-9]{5}(-[0-9]{4})?$/;
+  var CA_POSTAL_RE = /^([ABCEGHJ-NPRSTVXY][0-9][ABCEGHJ-NPRSTV-Z])[ -]?([0-9][ABCEGHJ-NPRSTV-Z][0-9])$/;
 
   var cfg = null;
   var acceptLoading = null;
@@ -62,13 +67,22 @@ const EMBED_SCRIPT = `(function () {
     return acceptLoading;
   }
 
+  // US ZIP as typed; Canadian postal code upper-cased as "A1A 1A1". Null when
+  // it is neither, so it is never sent to Authorize.Net.
+  function normalizePostal(value) {
+    var v = String(value || '').trim().toUpperCase();
+    if (US_ZIP_RE.test(v)) return v;
+    var ca = CA_POSTAL_RE.exec(v);
+    return ca ? ca[1] + ' ' + ca[2] : null;
+  }
+
   function readCard() {
     return {
       cardNumber: document.getElementById('card-number').value.trim(),
       month: document.getElementById('card-exp-month').value.trim(),
       year: document.getElementById('card-exp-year').value.trim(),
       cardCode: document.getElementById('card-code').value.trim(),
-      zip: document.getElementById('card-zip').value.trim()
+      zip: normalizePostal(document.getElementById('card-zip').value)
     };
   }
 
@@ -80,6 +94,13 @@ const EMBED_SCRIPT = `(function () {
 
   function tokenize() {
     if (!cfg || busy) return;
+    var card = readCard();
+    if (!card.zip) {
+      // The parent shows its own sentence for this code; the card details
+      // stay in the fields to be corrected.
+      postToParent({ type: 'vanta:pay:error', sessionId: cfg.sessionId, code: 'VS_POSTAL' });
+      return;
+    }
     busy = true;
     status('Encrypting card details…', false);
 
@@ -91,7 +112,7 @@ const EMBED_SCRIPT = `(function () {
               apiLoginID: cfg.authnet.apiLoginId,
               clientKey: cfg.authnet.clientKey
             },
-            cardData: readCard()
+            cardData: card
           }, function (response) {
             if (response.messages.resultCode === 'Error') {
               var first = response.messages.message && response.messages.message[0];
@@ -121,9 +142,10 @@ const EMBED_SCRIPT = `(function () {
   }
 
   function onParentMessage(event) {
-    // Strict validation: exact origin approved server-side for this session,
-    // exact message type, and the message must carry this session's id.
-    if (!cfg || event.origin !== cfg.embedOrigin) return;
+    // Strict validation: the window that framed this form (not merely any
+    // window of the approved origin), the exact origin approved server-side
+    // for this session, the exact message type, and this session's id.
+    if (!cfg || event.source !== window.parent || event.origin !== cfg.embedOrigin) return;
     var data = event.data;
     if (!data || typeof data !== 'object') return;
     if (data.type !== 'vanta:pay:submit') return;
@@ -132,8 +154,23 @@ const EMBED_SCRIPT = `(function () {
     tokenize();
   }
 
+  // The token arrives in the URL fragment, which browsers never send to a
+  // server (so it is in no request log or Referer). The query string is still
+  // read for links issued before that change. Either way it is then removed
+  // from this frame's address, where scripts on the page could read it.
+  function readSessionToken() {
+    var fromHash = new URLSearchParams(String(window.location.hash || '').slice(1)).get('session');
+    var token = fromHash || new URLSearchParams(window.location.search).get('session') || '';
+    try {
+      window.history.replaceState(null, '', window.location.pathname);
+    } catch (ignored) {
+      // An address that cannot be rewritten still works.
+    }
+    return token;
+  }
+
   function init() {
-    var token = new URLSearchParams(window.location.search).get('session') || '';
+    var token = readSessionToken();
     if (!TOKEN_RE.test(token)) {
       status('This payment session link is invalid.', true);
       return;
@@ -213,7 +250,7 @@ function renderEmbedPage() {
     '</div>',
     '<div class="row">',
     '<div><label for="card-code">Security code</label><input id="card-code" inputmode="numeric" autocomplete="cc-csc" required></div>',
-    '<div><label for="card-zip">Billing ZIP</label><input id="card-zip" inputmode="numeric" autocomplete="postal-code" required></div>',
+    '<div><label for="card-zip">Billing ZIP / postal code</label><input id="card-zip" inputmode="text" autocapitalize="characters" autocomplete="postal-code" maxlength="10" spellcheck="false" required></div>',
     '</div>',
     '<button class="sr-submit" type="submit" tabindex="-1" aria-hidden="true">Pay</button>',
     '</form>',

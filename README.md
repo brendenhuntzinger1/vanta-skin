@@ -9,6 +9,8 @@ Static e-commerce site (plain HTML/CSS/JS) with Vercel serverless payment APIs f
 4. **Products** — edit `assets/js/products.js` (prices, descriptions, images in `assets/img/`).
 5. Have the policies reviewed by an attorney, and fill in the real INCI ingredient list on the jar label.
 
+> PCI DSS notes for the card-entry page (data flow, payment-page scripts, change detection, what needs the merchant/QSA): `PCI_PAYMENT_PAGE.md`.
+
 ## Pages
 Home, Shop, Product, Cart, Checkout, Our Story, Contact, FAQ, Track Order, Shipping, Returns & Refunds, Privacy, Terms, Product Disclaimer, Accessibility, 404.
 
@@ -27,7 +29,7 @@ This repository includes server-to-server payment endpoints under `/api/payments
 - `POST /api/payments/reconcile` (read-only: what happened to a charge, refund or void attempt; no money moves)
 - `POST /api/payments/session` (create a short-lived embedded-checkout payment session)
 - `POST /api/payments/session-validate` (browser-facing session check for the hosted component)
-- `GET /api/payments/embed?session=<token>` (hosted payment component iframed by the Vanta Labs checkout)
+- `GET /api/payments/embed#session=<token>` (hosted payment component iframed by the Vanta Labs checkout; the token is in the URL fragment, so it never reaches a server log or Referer)
 - `POST /api/payments/webhook` (Authorize.net only)
 - `POST /api/payments/sync-retry` (re-deliver due status callbacks to Vanta Labs; run from a cron)
 - `GET /api/payments/health` (signed readiness check)
@@ -168,7 +170,7 @@ See `VANTA_LABS_HANDOFF.md` for the integration contract (headers, canonical sig
 ### Embedded payment component (Vanta Labs checkout)
 
 For cross-storefront checkout, Vanta Skin hosts the card form at
-`GET /api/payments/embed?session=<token>` and the Vanta Labs checkout iframes
+`GET /api/payments/embed#session=<token>` and the Vanta Labs checkout iframes
 it; the customer never leaves `vantalabsresearch.com`. Raw card data stays
 inside the iframe and is tokenized there by Accept.js; Labs only receives the
 `opaqueData` token via strictly validated `postMessage` (exact-origin checks,

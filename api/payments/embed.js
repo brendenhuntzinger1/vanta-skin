@@ -16,9 +16,13 @@ module.exports = async function handler(req, res) {
   if (req.method !== 'GET') return methodNotAllowed(req, res, ['GET']);
 
   try {
+    // The session token normally arrives in the URL fragment, which the
+    // browser never sends here: the page is static and the frame validates the
+    // token itself (POST /api/payments/session-validate). A token in the query
+    // string (links issued before the change) is still shape-checked.
     const url = new URL(req.url, 'https://localhost');
-    const token = url.searchParams.get('session') || '';
-    if (!TOKEN_RE.test(token)) {
+    const token = url.searchParams.get('session');
+    if (token !== null && !TOKEN_RE.test(token)) {
       return setJson(res, 400, { ok: false, error: 'Invalid payment session' });
     }
 

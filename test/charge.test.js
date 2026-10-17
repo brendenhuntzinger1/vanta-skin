@@ -616,7 +616,8 @@ test('session creation stores only the token hash and returns the embed URL', as
   const res = await handleCreatePaymentSession(req, rawBody, ctx.deps);
   assert.equal(res.statusCode, 200);
   assert.match(res.body.sessionToken, /^vps_[0-9a-f]{64}$/);
-  assert.equal(res.body.embedUrl, `/api/payments/embed?session=${res.body.sessionToken}`);
+  // In the fragment: never sent to a server, so in no request log or Referer.
+  assert.equal(res.body.embedUrl, `/api/payments/embed#session=${res.body.sessionToken}`);
   assert.match(res.body.sessionId, /^[0-9a-f]{24}$/);
   const stored = ctx.store.db.sessions.get(sha256Hex(res.body.sessionToken));
   assert.ok(stored, 'session stored by hash');

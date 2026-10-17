@@ -91,3 +91,41 @@ test('embed page: no visible pay button of its own; Enter asks the parent checko
   // iOS Safari zooms into inputs under 16px.
   assert.match(html, /font-size:16px/);
 });
+
+// The token now travels in the URL fragment (never sent to the server), so
+// the page is served without it; a token in the query (older links) is still
+// shape-checked.
+test('embed serves the static page with no token in the query; a malformed query token is still refused', async () => {
+  const env = {
+    VANTA_EMBED_ALLOWED_ORIGINS: 'https://vantalabsresearch.com',
+    AUTHNET_API_LOGIN_ID: 'login', AUTHNET_TRANSACTION_KEY: 'txkey',
+    SUPABASE_URL: 'https://db.test', SUPABASE_SERVICE_ROLE_KEY: 'srk',
+    VANTA_HMAC_KEY_ID: 'k', VANTA_HMAC_SHARED_SECRET: 's',
+  };
+  const saved = Object.fromEntries(Object.keys(env).map((k) => [k, process.env[k]]));
+  Object.assign(process.env, env);
+  try {
+    const ok = res();
+    await embed(req({ method: 'GET', url: '/api/payments/embed' }), ok);
+    assert.equal(ok.statusCode, 200);
+    assert.match(ok.headers['content-security-policy'], /frame-ancestors https:\/\/vantalabsresearch\.com/);
+    assert.equal(ok.headers['referrer-policy'], 'no-referrer');
+    assert.equal(ok.headers['cache-control'], 'no-store');
+    const bad = res();
+    await embed(req({ method: 'GET', url: '/api/payments/embed?session=vps_nope' }), bad);
+    assert.equal(bad.statusCode, 400);
+  } finally {
+    for (const [k, v] of Object.entries(saved)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  }
+});
+
+test('the billing field accepts letters (Canadian postal codes) and is labelled for both', () => {
+  const html = renderEmbedPage();
+  const zip = html.match(/<input id="card-zip"[^>]*>/)[0];
+  assert.doesNotMatch(zip, /inputmode="numeric"/);
+  assert.match(zip, /autocomplete="postal-code"/);
+  assert.match(html, /Billing ZIP \/ postal code/);
+});

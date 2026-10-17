@@ -31,7 +31,7 @@ tests in `test/`.
 | POST | `/api/payments/reconcile` | Labs backend (signed) | **no** (read-only lookup) |
 | POST | `/api/payments/session` | Labs backend (signed) | no |
 | POST | `/api/payments/session-validate` | browser (hosted component only) | no |
-| GET | `/api/payments/embed?session=<token>` | browser (hosted component) | no |
+| GET | `/api/payments/embed#session=<token>` (token in the fragment; `?session=` still accepted) | browser (hosted component) | no |
 | POST | `/api/payments/webhook` | Authorize.Net only | no |
 | GET | `/api/payments/tokenize-config` | browser | no |
 | GET | `/api/payments/health` | Labs / ops (signed) | no |
@@ -394,9 +394,16 @@ Accept.js is supported in this configuration:
 
 - Messages parent → iframe and iframe → parent always use an explicit target
   origin (the server-approved `embedOrigin`), never a wildcard.
-- Receivers check `event.origin` for an exact match before reading anything;
-  the parent also checks `event.source` is its own iframe, and charges only a
-  token it asked for.
+- Receivers check `event.origin` for an exact match and `event.source` before
+  reading anything: the iframe answers only `window.parent` (not any other
+  window of the Labs origin), the parent only its own iframe, and the parent
+  charges only a token it asked for.
+- The billing field takes a US ZIP (`12345`, `12345-6789`) or a Canadian
+  postal code (`A1A 1A1`, sent upper-cased with one space). Anything else is
+  refused inside the frame with `vanta:pay:error` code `VS_POSTAL`; nothing is
+  sent to Accept.js.
+- The session token is passed in the URL fragment (`#session=`), never sent to
+  a server, and the frame removes it from its own address once read.
 - Every message carries `sessionId` (first 24 hex chars of the token's
   SHA-256, computable by both sides); mismatched messages are dropped.
 - Message types: `vanta:pay:ready`, `vanta:pay:tokenized`, `vanta:pay:error`,

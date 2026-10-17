@@ -593,7 +593,9 @@ async function handleCreatePaymentSession(req, rawBody, deps) {
       sessionToken: token,
       sessionId: paymentSessionIdFromToken(token),
       expiresAt,
-      embedUrl: `/api/payments/embed?session=${token}`,
+      // Fragment, not query: never sent to a server, so the token stays out of
+      // request logs and Referer headers.
+      embedUrl: `/api/payments/embed#session=${token}`,
       sandbox: config.authnet.sandbox,
     },
     replayed: false,
