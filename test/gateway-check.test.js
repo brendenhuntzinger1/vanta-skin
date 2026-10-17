@@ -154,3 +154,42 @@ test('reports the shape of each credential, never its value, and whether trimmin
   assert.deepEqual(result.authenticateTrimmed, { ok: true, code: 'I00001' });
   noSecretsIn(result);
 });
+
+test('register=1 adds the sandbox webhook for this deployment once, then pings it', async () => {
+  const hooks = [];
+  const calls = [];
+  const url = `https://${HOST}/api/payments/webhook?x-vercel-protection-bypass=BYPASS-SECRET-5`;
+  const fetchImpl = async (u, init = {}) => {
+    calls.push({ u, method: init.method || 'GET', body: init.body });
+    if (u === SANDBOX_API) return { ok: true, status: 200, text: async () => JSON.stringify(ok({ publicClientKey: SECRETS.clientKey })) };
+    if (u === `${SANDBOX_REST}/webhooks` && init.method === 'POST') {
+      hooks.push({ webhookId: 'wh-new', ...JSON.parse(init.body) });
+      return { ok: true, status: 200, text: async () => JSON.stringify(hooks[0]) };
+    }
+    if (u === `${SANDBOX_REST}/webhooks`) return { ok: true, status: 200, text: async () => JSON.stringify(hooks) };
+    if (/\/pings$/.test(u)) return { ok: true, status: 200, text: async () => '' };
+    throw new Error(u);
+  };
+  const result = await runGatewayCheck({ env: env({ AUTHNET_WEBHOOK_URL: url }), fetchImpl, register: true, ping: true });
+  assert.deepEqual(result.checks.webhookRegistration, { ok: true, status: 200, created: true });
+  assert.equal(result.checks.webhooks.ok, true);
+  assert.deepEqual(result.checks.webhookPing, { ok: true, status: 200 });
+  assert.equal(hooks[0].url, url);
+  assert.equal(hooks[0].status, 'active');
+  assert.deepEqual([...hooks[0].eventTypes].sort(), ['net.authorize.payment.authcapture.created', 'net.authorize.payment.capture.created', 'net.authorize.payment.refund.created', 'net.authorize.payment.void.created']);
+  noSecretsIn(result);
+
+  // A second run finds it and creates nothing.
+  const again = await runGatewayCheck({ env: env({ AUTHNET_WEBHOOK_URL: url }), fetchImpl, register: true });
+  assert.deepEqual(again.checks.webhookRegistration, { ok: true, status: null, created: false });
+  assert.equal(calls.filter((c) => c.method === 'POST' && c.u === `${SANDBOX_REST}/webhooks`).length, 1);
+});
+
+test('register=1 refuses a webhook URL that is not this deployment\'s webhook endpoint', async () => {
+  const gw = fakeGateway({ webhooks: [] });
+  for (const bad of ['', 'http://' + HOST + '/api/payments/webhook', 'https://evil.example/api/payments/webhook', `https://${HOST}/api/payments/charge`]) {
+    const result = await runGatewayCheck({ env: env({ AUTHNET_WEBHOOK_URL: bad }), fetchImpl: gw.fetchImpl, register: true });
+    assert.deepEqual(result.checks.webhookRegistration, { ok: false, status: null, created: false, reason: 'webhook_url_invalid' });
+  }
+  assert.equal(gw.calls.filter((c) => c.method === 'POST' && c.url.endsWith('/webhooks')).length, 0);
+});

@@ -25,6 +25,8 @@ const { resolveAuthnetMode } = require('./config');
 //                        this deployment with the event types Skin handles
 //   webhookPing          with ping=1 only: Authorize.Net sends a signed test
 //                        notification to that endpoint
+//   webhookRegistration  with register=1 only: adds that endpoint when it is
+//                        missing (see registerWebhook)
 //
 // Live credentials are never checked here: the check refuses unless the
 // service is in sandbox mode, and it only ever calls the sandbox hosts.
@@ -119,7 +121,39 @@ async function checkWebhooks(fetchImpl, creds, host, ping) {
   }
 }
 
-async function runGatewayCheck({ env = process.env, fetchImpl = globalThis.fetch, ping = false } = {}) {
+// register=1: adds the sandbox webhook for THIS deployment when none points
+// here yet. The URL comes from AUTHNET_WEBHOOK_URL (it carries the Preview's
+// webhook-only Vercel bypass, so it is configuration, never a request field)
+// and must be https, on this deployment's host, at /api/payments/webhook.
+async function registerWebhook(fetchImpl, creds, host, rawUrl) {
+  let url;
+  try { url = new URL(String(rawUrl || '')); } catch { url = null; }
+  if (!url || url.protocol !== 'https:' || !host || url.host !== host || url.pathname !== '/api/payments/webhook') {
+    return { ok: false, status: null, created: false, reason: 'webhook_url_invalid' };
+  }
+  const headers = { authorization: basicAuth(creds), 'content-type': 'application/json', accept: 'application/json' };
+  try {
+    const list = await withTimeout(fetchImpl, `${SANDBOX_REST}/webhooks`, { method: 'GET', headers });
+    const hooks = list.ok ? JSON.parse((await list.text()).replace(/^\uFEFF/, '') || '[]') : null;
+    if (!Array.isArray(hooks)) return { ok: false, status: list.status, created: false, reason: 'list_failed' };
+    if (hooks.some((h) => describeWebhook(h, host).pointsHere)) return { ok: true, status: null, created: false };
+    const res = await withTimeout(fetchImpl, `${SANDBOX_REST}/webhooks`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        name: 'vanta-skin-sandbox-preview',
+        url: url.toString(),
+        eventTypes: [...REQUIRED_EVENT_TYPES, 'net.authorize.payment.capture.created'],
+        status: 'active',
+      }),
+    });
+    return { ok: res.status >= 200 && res.status < 300, status: res.status, created: res.status >= 200 && res.status < 300 };
+  } catch {
+    return { ok: false, status: null, created: false, reason: 'unreachable' };
+  }
+}
+
+async function runGatewayCheck({ env = process.env, fetchImpl = globalThis.fetch, ping = false, register = false } = {}) {
   if (resolveAuthnetMode(env).mode !== 'sandbox') return { ok: false, error: 'sandbox_only' };
   const creds = {
     apiLoginId: env.AUTHNET_API_LOGIN_ID,
@@ -160,7 +194,9 @@ async function runGatewayCheck({ env = process.env, fetchImpl = globalThis.fetch
     const trimmed = await callApi(fetchImpl, { authenticateTestRequest: { merchantAuthentication: { name: String(creds.apiLoginId).trim(), transactionKey: String(creds.transactionKey).trim() } } });
     authenticateTrimmed = { ok: trimmed.ok, code: trimmed.code };
   }
-  const hooks = await checkWebhooks(fetchImpl, creds, String(env.VERCEL_BRANCH_URL || env.VERCEL_URL || ''), ping);
+  const host = String(env.VERCEL_BRANCH_URL || env.VERCEL_URL || '');
+  const webhookRegistration = register ? await registerWebhook(fetchImpl, creds, host, env.AUTHNET_WEBHOOK_URL) : undefined;
+  const hooks = await checkWebhooks(fetchImpl, creds, host, ping);
 
   const checks = {
     authenticate: { ok: authenticate.ok, code: authenticate.code },
@@ -171,6 +207,7 @@ async function runGatewayCheck({ env = process.env, fetchImpl = globalThis.fetch
       : { ok: false, code: details.code },
     transactionDetails: { ok: unsettled.ok, code: unsettled.code },
     webhooks: hooks.webhooks,
+    ...(register ? { webhookRegistration } : {}),
     ...(ping ? { webhookPing: hooks.webhookPing } : {}),
   };
   const ok = Object.values(checks).every((c) => c.ok) && checks.merchantDetails.publicClientKeyMatches === true;

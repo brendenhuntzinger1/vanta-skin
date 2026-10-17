@@ -97,7 +97,8 @@ async function runHealthCheck(req, {
   if (wantsGateway) {
     const slot = gatewayLimiter.take();
     if (!slot.allowed) return { statusCode: 429, body: { ok: false, error: 'rate_limited', retryAfterSeconds: slot.retryAfterSeconds } };
-    gateway = await runGatewayCheck({ ping: /[?&]ping=1(&|$)/.test(String(req.url || '')) });
+    const url = String(req.url || '');
+    gateway = await runGatewayCheck({ ping: /[?&]ping=1(&|$)/.test(url), register: /[?&]register=1(&|$)/.test(url) });
   }
 
   const wantsCallback = /[?&]callback=1(&|$)/.test(String(req.url || ''));
