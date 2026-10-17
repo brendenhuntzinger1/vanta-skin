@@ -67,13 +67,23 @@ test('embed never tells the browser which configuration failed', async (t) => {
   }
 });
 
-test('embed CSP: framed only by the approved Labs origins, Accept.js hosts reachable for load and integrity check', () => {
+// The live loaders name their tokenization endpoint in `encryptEndPoint`:
+// https://js.authorize.net/v1/Accept.js posts to api2.authorize.net and
+// https://jstest.authorize.net/v1/Accept.js to apitest.authorize.net
+// (checked 2026-10-17; the loader is dated 2019-09-13). Without api2 the
+// browser refuses every production card before it leaves the frame.
+test('embed CSP: framed only by the approved Labs origins, Accept.js hosts reachable for load, integrity check and tokenization', () => {
   const csp = buildEmbedCsp(['https://vantalabsresearch.com']);
   assert.match(csp, /frame-ancestors https:\/\/vantalabsresearch\.com(;|$)/);
   const connect = csp.split('; ').find((d) => d.startsWith('connect-src'));
-  for (const host of ['https://jstest.authorize.net', 'https://js.authorize.net', 'https://apitest.authorize.net', 'https://api.authorize.net']) {
-    assert.ok(connect.includes(host), host);
-  }
+  assert.deepEqual(connect.split(' ').slice(1).sort(), [
+    "'self'",
+    'https://api.authorize.net',
+    'https://api2.authorize.net',
+    'https://apitest.authorize.net',
+    'https://js.authorize.net',
+    'https://jstest.authorize.net',
+  ]);
   assert.match(csp, /default-src 'none'/);
 });
 

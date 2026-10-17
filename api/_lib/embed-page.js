@@ -34,9 +34,18 @@ const EMBED_SCRIPT = `(function () {
   var US_ZIP_RE = /^[0-9]{5}(-[0-9]{4})?$/;
   var CA_POSTAL_RE = /^([ABCEGHJ-NPRSTVXY][0-9][ABCEGHJ-NPRSTV-Z])[ -]?([0-9][ABCEGHJ-NPRSTV-Z][0-9])$/;
 
+  // Accept.js is only usable once AcceptCore.js, which it fetches itself,
+  // has announced readiness (window.isReady); until then dispatchData is a
+  // stub that answers E_WC_03. The frame answers every press before the Labs
+  // page's own 30-second tokenize timeout gives up on it.
+  var ACCEPT_READY_TIMEOUT_MS = 15000;
+  var TOKENIZE_TIMEOUT_MS = 25000;
+
   var cfg = null;
+  var acceptScript = null;
   var acceptLoading = null;
   var busy = false;
+  var attempt = 0;
 
   function status(message, isError) {
     var el = document.getElementById('pay-status');
@@ -51,18 +60,46 @@ const EMBED_SCRIPT = `(function () {
     window.parent.postMessage(message, cfg.embedOrigin);
   }
 
+  function codedError(code, message) {
+    var err = new Error(message);
+    err.code = code;
+    return err;
+  }
+
+  // The loader fetches AcceptCore.js only once, so a load that failed is
+  // thrown away whole and the next press starts again from the loader.
+  function discardAcceptJs() {
+    if (acceptScript && acceptScript.parentNode) acceptScript.parentNode.removeChild(acceptScript);
+    acceptScript = null;
+    window.Accept = undefined;
+    acceptLoading = null;
+  }
+
   function loadAcceptJs(sandbox) {
-    if (window.Accept) return Promise.resolve(window.Accept);
     if (acceptLoading) return acceptLoading;
     acceptLoading = new Promise(function (resolve, reject) {
-      var script = document.createElement('script');
-      script.src = sandbox
+      var started = Date.now();
+      function whenCoreReady() {
+        if (window.Accept && window.isReady === true) return resolve(window.Accept);
+        if (Date.now() - started >= ACCEPT_READY_TIMEOUT_MS) {
+          return reject(codedError('VS_ACCEPT_LOAD', 'Unable to load the secure payment library'));
+        }
+        setTimeout(whenCoreReady, 50);
+      }
+      if (window.Accept) return whenCoreReady();
+      acceptScript = document.createElement('script');
+      acceptScript.src = sandbox
         ? 'https://jstest.authorize.net/v1/Accept.js'
         : 'https://js.authorize.net/v1/Accept.js';
-      script.async = true;
-      script.onload = function () { resolve(window.Accept); };
-      script.onerror = function () { acceptLoading = null; reject(new Error('Unable to load the secure payment library')); };
-      document.head.appendChild(script);
+      acceptScript.async = true;
+      acceptScript.onload = whenCoreReady;
+      acceptScript.onerror = function () {
+        reject(codedError('VS_ACCEPT_LOAD', 'Unable to load the secure payment library'));
+      };
+      document.head.appendChild(acceptScript);
+    }).catch(function (error) {
+      discardAcceptJs();
+      throw error;
     });
     return acceptLoading;
   }
@@ -103,6 +140,22 @@ const EMBED_SCRIPT = `(function () {
     }
     busy = true;
     status('Encrypting card details…', false);
+    var mine = ++attempt;
+    // A press that is never answered (a stalled network, a blocked request)
+    // gives the form back instead of holding it busy for good. A late answer
+    // to an abandoned press is dropped: no token is posted, no field cleared.
+    var timer = setTimeout(function () {
+      if (mine !== attempt) return;
+      attempt += 1;
+      busy = false;
+      status('', false);
+      postToParent({ type: 'vanta:pay:error', sessionId: cfg.sessionId, code: 'VS_TIMEOUT' });
+    }, TOKENIZE_TIMEOUT_MS);
+    function current() {
+      if (mine !== attempt) return false;
+      clearTimeout(timer);
+      return true;
+    }
 
     loadAcceptJs(cfg.authnet.sandbox)
       .then(function () {
@@ -126,6 +179,7 @@ const EMBED_SCRIPT = `(function () {
         });
       })
       .then(function (opaqueData) {
+        if (!current()) return;
         // Raw card data never leaves this iframe: only the Authorize.net
         // opaqueData token is sent to the parent checkout.
         clearCard();
@@ -134,6 +188,7 @@ const EMBED_SCRIPT = `(function () {
         postToParent({ type: 'vanta:pay:tokenized', sessionId: cfg.sessionId, opaqueData: opaqueData });
       })
       .catch(function (error) {
+        if (!current()) return;
         busy = false;
         status('', false);
         // The parent shows the shopper its own sentence for this code.
@@ -191,6 +246,9 @@ const EMBED_SCRIPT = `(function () {
         status('', false);
         window.addEventListener('message', onParentMessage);
         postToParent({ type: 'vanta:pay:ready', sessionId: cfg.sessionId });
+        // Load Accept.js while the shopper types; a failure here is retried
+        // and reported by the first press.
+        loadAcceptJs(cfg.authnet.sandbox).catch(function () {});
       })
       .catch(function (error) {
         status(error.message, true);
@@ -222,7 +280,9 @@ function buildEmbedCsp(allowedOrigins) {
     `style-src ${cspHash(EMBED_STYLE)}`,
     // Accept.js fetches its own core library from the js hosts to check its
     // integrity before use, then posts card data to the api hosts.
-    "connect-src 'self' https://apitest.authorize.net https://api.authorize.net https://jstest.authorize.net https://js.authorize.net",
+    // The production loader posts to api2.authorize.net (its encryptEndPoint),
+    // the sandbox loader to apitest.authorize.net.
+    "connect-src 'self' https://apitest.authorize.net https://api.authorize.net https://api2.authorize.net https://jstest.authorize.net https://js.authorize.net",
     "img-src 'none'",
     "font-src 'none'",
     "base-uri 'none'",

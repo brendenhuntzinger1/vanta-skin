@@ -181,7 +181,7 @@ test('buildPublicSessionPayload exposes only public per-session fields', () => {
   assert.deepEqual(Object.keys(payload.authnet).sort(), ['apiLoginId', 'clientKey', 'sandbox']);
   assert.deepEqual(
     Object.keys(payload).sort(),
-    ['amountCents', 'authnet', 'currency', 'embedOrigin', 'expiresAt', 'ok', 'orderId', 'sessionId'],
+    ['authnet', 'embedOrigin', 'ok', 'sessionId'],
   );
   // The raw token is never returned; the sessionId is a truncated hash.
   assert.equal(payload.sessionId, validRecord().token_hash.slice(0, 24));
@@ -195,7 +195,7 @@ test('buildEmbedCsp restricts framing, scripts and connections', () => {
   assert.match(csp, /frame-ancestors https:\/\/vantalabsresearch\.com/);
   assert.match(csp, /default-src 'none'/);
   assert.match(csp, /script-src 'sha256-[A-Za-z0-9+/=]+' https:\/\/jstest\.authorize\.net https:\/\/js\.authorize\.net/);
-  assert.match(csp, /connect-src 'self' https:\/\/apitest\.authorize\.net https:\/\/api\.authorize\.net/);
+  assert.match(csp, /connect-src 'self' https:\/\/apitest\.authorize\.net https:\/\/api\.authorize\.net https:\/\/api2\.authorize\.net/);
   // No unsafe-inline anywhere: inline script/style are hash-locked.
   assert.equal(csp.includes('unsafe-inline'), false);
   assert.equal(csp.includes('*'), false);
