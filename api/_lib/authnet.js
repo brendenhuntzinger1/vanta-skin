@@ -310,6 +310,13 @@ function cardLast4From(accountNumber) {
   return match ? match[1] : null;
 }
 
+// AVS and CVV result codes are one or two letters or digits. Anything else is
+// not a code and is not stored.
+function verificationCode(value) {
+  const code = value === undefined || value === null ? '' : String(value).trim().toUpperCase();
+  return /^[A-Z0-9]{1,2}$/.test(code) ? code : null;
+}
+
 function cleanTransId(value) {
   const id = value === undefined || value === null ? '' : String(value).trim();
   return id && id !== '0' ? id : null;
@@ -333,6 +340,10 @@ function mapGatewayResponse(response) {
     cardType: tx?.accountType ? String(tx.accountType) : null,
     processorCode: tx?.responseCode ? String(tx.responseCode) : resultCode,
     errorCode: tx?.errors?.[0]?.errorCode || response?.messages?.message?.[0]?.code || null,
+    // Kept in their own columns (payment_events.avs_result_code and
+    // cvv_result_code), so trimming stored raw responses later loses neither.
+    avsResultCode: verificationCode(tx?.avsResultCode),
+    cvvResultCode: verificationCode(tx?.cvvResultCode),
     message: mapMessage(response),
     gatewayRefId: response.refId || null,
     raw: response,
@@ -368,6 +379,8 @@ function uncertainResult(reason, error) {
     cardType: null,
     processorCode: null,
     errorCode: null,
+    avsResultCode: null,
+    cvvResultCode: null,
     message: reason === 'timeout' ? 'Gateway timeout' : 'Gateway result unknown',
     gatewayRefId: null,
     raw: null,
@@ -406,11 +419,34 @@ function sortingNewestFirst() {
   return sorting;
 }
 
-function paging(limit = 1000, offset = 1) {
+// Authorize.Net returns at most 1000 transactions a page; offset is the page
+// number, from 1.
+const LOOKUP_PAGE_SIZE = 1000;
+// Bounded: past this many pages a listing is returned marked `truncated`, and
+// reconciliation never treats a truncated listing as proof of "not found".
+const LOOKUP_MAX_PAGES = 10;
+
+function paging(limit = LOOKUP_PAGE_SIZE, offset = 1) {
   const p = new APIContracts.Paging();
   p.setLimit(limit);
   p.setOffset(offset);
   return p;
+}
+
+function markTruncated(list) {
+  Object.defineProperty(list, 'truncated', { value: true, enumerable: false });
+  return list;
+}
+
+// Reads pages until one comes back short, or the page bound is reached.
+async function readPages(fetchPage, { pageSize, maxPages }) {
+  const all = [];
+  for (let page = 1; page <= maxPages; page += 1) {
+    const items = await fetchPage(page);
+    all.push(...items);
+    if (items.length < pageSize) return all;
+  }
+  return markTruncated(all);
 }
 
 // ---------------------------------------------------------------------------
@@ -430,7 +466,7 @@ function setDefaultExecutor(fn) {
   defaultExecutor = fn;
 }
 
-function createGateway({ execute, timeoutMs } = {}) {
+function createGateway({ execute, timeoutMs, pageSize = LOOKUP_PAGE_SIZE, maxPages = LOOKUP_MAX_PAGES } = {}) {
   const run = (config, requestObject, controller) => {
     const exec = execute || getDefaultExecutor();
     const ms = timeoutMs || config?.authnet?.timeoutMs || 20000;
@@ -459,12 +495,14 @@ function createGateway({ execute, timeoutMs } = {}) {
     },
 
     async getUnsettledTransactionList(config) {
-      const request = new APIContracts.GetUnsettledTransactionListRequest();
-      request.setMerchantAuthentication(merchantAuth(config));
-      request.setSorting(sortingNewestFirst());
-      request.setPaging(paging());
-      const response = assertLookupOk(await run(config, request, 'GetUnsettledTransactionListController'), 'getUnsettledTransactionList');
-      return listOf(response.transactions, 'transaction');
+      return readPages(async (page) => {
+        const request = new APIContracts.GetUnsettledTransactionListRequest();
+        request.setMerchantAuthentication(merchantAuth(config));
+        request.setSorting(sortingNewestFirst());
+        request.setPaging(paging(pageSize, page));
+        const response = assertLookupOk(await run(config, request, 'GetUnsettledTransactionListController'), 'getUnsettledTransactionList');
+        return listOf(response.transactions, 'transaction');
+      }, { pageSize, maxPages });
     },
 
     async getSettledBatchList(config, { from, to }) {
@@ -478,13 +516,15 @@ function createGateway({ execute, timeoutMs } = {}) {
     },
 
     async getTransactionList(config, batchId) {
-      const request = new APIContracts.GetTransactionListRequest();
-      request.setMerchantAuthentication(merchantAuth(config));
-      request.setBatchId(String(batchId));
-      request.setSorting(sortingNewestFirst());
-      request.setPaging(paging());
-      const response = assertLookupOk(await run(config, request, 'GetTransactionListController'), 'getTransactionList');
-      return listOf(response.transactions, 'transaction');
+      return readPages(async (page) => {
+        const request = new APIContracts.GetTransactionListRequest();
+        request.setMerchantAuthentication(merchantAuth(config));
+        request.setBatchId(String(batchId));
+        request.setSorting(sortingNewestFirst());
+        request.setPaging(paging(pageSize, page));
+        const response = assertLookupOk(await run(config, request, 'GetTransactionListController'), 'getTransactionList');
+        return listOf(response.transactions, 'transaction');
+      }, { pageSize, maxPages });
     },
 
     async getTransactionDetails(config, transId) {
@@ -501,12 +541,14 @@ function createGateway({ execute, timeoutMs } = {}) {
       const from = new Date(to.getTime() - days * 24 * 60 * 60 * 1000);
       const batches = await this.getSettledBatchList(config, { from, to });
       const all = [];
+      let truncated = false;
       for (const batch of batches) {
         if (!batch?.batchId) continue;
         const txs = await this.getTransactionList(config, batch.batchId);
+        if (txs.truncated) truncated = true;
         all.push(...txs);
       }
-      return all;
+      return truncated ? markTruncated(all) : all;
     },
   };
 }
@@ -528,6 +570,8 @@ module.exports = {
   GatewayNetworkError,
   GatewayTimeoutError,
   LIMITS,
+  LOOKUP_MAX_PAGES,
+  LOOKUP_PAGE_SIZE,
   buildChargeRequest,
   buildRefundRequest,
   buildVoidRequest,
