@@ -710,6 +710,9 @@ async function recordChargeSideEffects(d, config, store, { payload, idempotencyK
     authnet_transaction_id: gw?.transactionId || null,
     card_last4: gw?.cardLast4 || null,
     card_type: gw?.cardType || null,
+    // Their own columns, so a later trim of response_payload keeps them.
+    avs_result_code: gw?.avsResultCode || null,
+    cvv_result_code: gw?.cvvResultCode || null,
     ref_id: refId,
     idempotency_key: idempotencyKey,
     request_payload: redactPaymentPayload(payload),
@@ -946,10 +949,75 @@ async function verifyWebhookPayment(store, payload, eventType) {
   if (gatewayCents === null) return { verified: false, reason: 'missing_amount', transactionId };
 
   const row = await store.findPaymentEventByTransaction(transactionId, [rule.action]);
-  if (!row) return { verified: false, reason: 'unknown_transaction', transactionId };
-  if (recordedOutcome(row) !== 'captured') return { verified: false, reason: 'recorded_outcome_not_captured', transactionId, row };
+  if (!row) return { verified: false, reason: 'unknown_transaction', transactionId, rule, gatewayCents };
+  if (recordedOutcome(row) !== 'captured') return { verified: false, reason: 'recorded_outcome_not_captured', transactionId, row, rule, gatewayCents };
   if (Number(row.amount_cents) !== gatewayCents) return { verified: false, reason: 'amount_mismatch', transactionId, row };
   return { verified: true, reason: 'verified', transactionId, row, rule, amountCents: gatewayCents };
+}
+
+// A capture this service has no captured record of: Skin recorded the charge
+// as uncertain (the gateway answer was lost) or held, or never recorded it at
+// all (the process died between the gateway and the database). Dropping it
+// would leave Labs believing the charge never happened, and a later attempt
+// could charge the card again (audit 2026-10-17, B H2). Instead it is matched
+// to an order by the VS- invoice, which is derived from the order id and
+// identical for every attempt, and the amount, and forwarded to Labs marked
+// for review. Labs settles it only through its own checks (amount equal to
+// the order total, one capture per order), and records a conflict otherwise.
+// A record of a definitive decline or rejection is never overridden here.
+const UNRECORDED_CAPTURE_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+const UNRECORDED_CAPTURE_SCAN_LIMIT = 200;
+const VS_INVOICE = /^VS-[0-9A-F]{17}$/;
+const CHARGE_KEY = /^vskin:charge:(.+):(\d+)$/;
+const NOT_A_CAPTURE = new Set(['captured', 'declined', 'rejected']);
+
+async function matchUnrecordedCapture(store, payload, verification, now) {
+  if (verification.rule?.action !== 'charge') return null;
+  const gatewayCents = verification.gatewayCents;
+
+  // Recorded as held (or uncertain) under this very transaction id.
+  if (verification.reason === 'recorded_outcome_not_captured') {
+    const row = verification.row;
+    if (!row || NOT_A_CAPTURE.has(recordedOutcome(row))) return null;
+    if (Number(row.amount_cents) !== gatewayCents) return null;
+    return { orderId: row.order_id, attemptKey: row.idempotency_key || null, originStorefront: row.origin_storefront || null, currency: row.currency || 'USD', cardLast4: row.card_last4 || null, cardType: row.card_type || null };
+  }
+  if (verification.reason !== 'unknown_transaction') return null;
+
+  const invoice = String(payload?.payload?.invoiceNumber || '').trim().toUpperCase();
+  if (!VS_INVOICE.test(invoice)) return null;
+  const since = new Date(now.getTime() - UNRECORDED_CAPTURE_WINDOW_MS).toISOString();
+  const { events, claims } = await store.listRecentChargeRecords({ since, limit: UNRECORDED_CAPTURE_SCAN_LIMIT });
+  const sameOrder = (orderId) => invoiceNumberFor({ orderId }) === invoice;
+
+  // An order with a record that already explains the money (captured), or
+  // whose only records are definitive refusals, is not matched.
+  const orderEvents = (events || []).filter((e) => e && sameOrder(e.order_id));
+  if (orderEvents.some((e) => recordedOutcome(e) === 'captured' && e.authnet_transaction_id)) return null;
+  const openEvents = orderEvents.filter((e) => !NOT_A_CAPTURE.has(recordedOutcome(e)) && !e.authnet_transaction_id);
+  if (openEvents.some((e) => Number(e.amount_cents) !== gatewayCents)) return null;
+  const recordedKeys = new Set(orderEvents.map((e) => e.idempotency_key).filter(Boolean));
+  const openClaims = (claims || [])
+    .map((c) => ({ ...c, match: CHARGE_KEY.exec(String(c?.idempotency_key || '')) }))
+    .filter((c) => c.match && sameOrder(c.match[1]) && c.status !== 'completed' && !recordedKeys.has(c.idempotency_key));
+
+  const candidates = [
+    ...openEvents.map((e) => ({ orderId: e.order_id, key: e.idempotency_key || null, originStorefront: e.origin_storefront || null, currency: e.currency || 'USD' })),
+    ...openClaims.map((c) => ({ orderId: c.match[1], key: c.idempotency_key, originStorefront: null, currency: 'USD' })),
+  ];
+  if (!candidates.length) return null;
+  const keys = new Set(candidates.map((c) => c.key).filter(Boolean));
+  const [first] = candidates;
+  return {
+    orderId: first.orderId,
+    // Several open attempts for the order: which one took the money is not
+    // known here. Labs settles the order and reconciles the attempts.
+    attemptKey: keys.size === 1 ? [...keys][0] : null,
+    originStorefront: first.originStorefront,
+    currency: first.currency,
+    cardLast4: null,
+    cardType: null,
+  };
 }
 
 async function handleWebhook(rawBody, signatureHeader, deps) {
@@ -974,15 +1042,18 @@ async function handleWebhook(rawBody, signatureHeader, deps) {
   const store = d.createStore(config);
   const verification = await verifyWebhookPayment(store, payload, eventType);
   const row = verification.verified ? verification.row : null;
+  // Matched before anything is recorded: a records failure here answers 500
+  // and Authorize.Net redelivers, rather than the capture being dropped.
+  const review = verification.verified ? null : await matchUnrecordedCapture(store, payload, verification, d.now());
 
   const recorded = await store.recordWebhookEvent({
     event_id: eventId,
     event_type: eventType,
     payload,
     transaction_id: verification.transactionId || extractWebhookTransactionId(payload),
-    reconciled_order_id: row?.order_id || null,
-    reconciled_status: verification.verified ? verification.rule.paymentStatus : null,
-    verification: verification.reason,
+    reconciled_order_id: row?.order_id || review?.orderId || null,
+    reconciled_status: verification.verified || review ? verification.rule.paymentStatus : null,
+    verification: review ? 'matched_by_invoice' : verification.reason,
     received_at: d.now().toISOString(),
   });
 
@@ -1023,14 +1094,51 @@ async function handleWebhook(rawBody, signatureHeader, deps) {
     }));
   }
 
+  if (review) {
+    const eventKey = buildSyncEventKey({ source: 'webhook', eventId });
+    const callback = {
+      eventId: eventKey,
+      source: 'authorize-net-webhook',
+      action: 'webhook_update',
+      webhookEventType: eventType,
+      attemptKey: review.attemptKey,
+      orderId: review.orderId,
+      originStorefront: review.originStorefront,
+      outcome: 'captured',
+      paymentStatus: verification.rule.paymentStatus,
+      transactionId: verification.transactionId,
+      originalTransactionId: null,
+      amountCents: verification.gatewayCents,
+      currency: review.currency,
+      cardLast4: review.cardLast4,
+      cardType: review.cardType,
+      sandbox: config.authnet.sandbox,
+      processorCode: '1',
+      message: eventType,
+      // Why this capture had no captured record here; Labs reports it.
+      reviewReason: verification.reason,
+      occurredAt: typeof payload.eventDate === 'string' ? payload.eventDate : d.now().toISOString(),
+    };
+    d.log('webhook_unrecorded_capture', { reason: verification.reason, orderId: review.orderId });
+    await safely(d, 'callback_error', () => enqueueAndDeliver(d, config, store, {
+      event_key: eventKey,
+      order_id: review.orderId,
+      origin_storefront: review.originStorefront,
+      event_type: 'payment.webhook',
+      payment_status: verification.rule.paymentStatus,
+      transaction_id: verification.transactionId,
+      payload: callback,
+    }));
+  }
+
   return {
     statusCode: 200,
     body: {
       ok: true,
       message: 'Webhook accepted',
       duplicate: !recorded.inserted,
-      forwarded: verification.verified,
-      verification: verification.reason,
+      forwarded: verification.verified || Boolean(review),
+      verification: review ? 'matched_by_invoice' : verification.reason,
     },
   };
 }
@@ -1066,6 +1174,8 @@ function outcomeForTransactionStatus(status) {
 }
 
 const RECONCILE_OPERATIONS = new Set(['charge', 'refund', 'void']);
+// Bounds the detail lookups for one attempt's candidate transactions.
+const MAX_CHARGE_DETAIL_LOOKUPS = 10;
 
 function validateReconcilePayload(payload) {
   if (payload.operation !== undefined && !RECONCILE_OPERATIONS.has(payload.operation)) throw invalid('Invalid operation');
@@ -1161,41 +1271,65 @@ async function reconcileAttempt({ config, store, gateway, now }, payload) {
     return !known.has(String(tx.transId));
   };
 
+  // Both listings, always: a second capture may already have settled while
+  // the first is unsettled, and one listing alone would hide it (B M2). A
+  // listing cut short by the paging bound proves nothing about absence.
   let lookupFailed = false;
   let candidates = [];
-  try {
-    candidates = (await gateway.getUnsettledTransactionList(config)).filter(matches);
-  } catch {
-    lookupFailed = true;
-  }
-  if (!candidates.length) {
+  for (const lookup of [
+    () => gateway.getUnsettledTransactionList(config),
+    () => gateway.getRecentSettledTransactions(config, { now, days: 2 }),
+  ]) {
     try {
-      candidates = (await gateway.getRecentSettledTransactions(config, { now, days: 2 })).filter(matches);
+      const list = await lookup();
+      if (list?.truncated) lookupFailed = true;
+      candidates.push(...(list || []).filter(matches));
     } catch {
       lookupFailed = true;
     }
   }
+  const seenIds = new Set();
+  candidates = candidates.filter((tx) => !seenIds.has(String(tx.transId)) && seenIds.add(String(tx.transId)));
 
   if (candidates.length) {
+    // Ranked by the listing's status. Details (the current status) are read
+    // for the best-ranked match and for every match the listing shows
+    // captured; a listed decline or error is already final.
     const ranked = candidates
-      .map((tx) => ({ tx, outcome: outcomeForTransactionStatus(tx.transactionStatus) }))
-      .sort((a, b) => OUTCOME_PRIORITY[a.outcome] - OUTCOME_PRIORITY[b.outcome]);
-    const { tx } = ranked[0];
-    let details = null;
-    try {
-      details = await gateway.getTransactionDetails(config, tx.transId);
-    } catch {
-      details = null;
+      .map((tx) => ({ tx, listed: outcomeForTransactionStatus(tx.transactionStatus) }))
+      .sort((a, b) => OUTCOME_PRIORITY[a.listed] - OUTCOME_PRIORITY[b.listed]);
+    const described = [];
+    for (const [index, { tx, listed }] of ranked.slice(0, MAX_CHARGE_DETAIL_LOOKUPS).entries()) {
+      let details = null;
+      if (index === 0 || listed === 'captured') {
+        try {
+          details = await gateway.getTransactionDetails(config, tx.transId);
+        } catch {
+          details = null;
+        }
+      }
+      const status = details?.transactionStatus || tx.transactionStatus;
+      described.push({
+        outcome: outcomeForTransactionStatus(status),
+        transactionId: String(tx.transId),
+        cardLast4: cardLast4From(details?.payment?.creditCard?.cardNumber || tx.accountNumber),
+        cardType: details?.payment?.creditCard?.cardType || tx.accountType || null,
+        amountCents: centsFromMoney(details?.authAmount ?? details?.settleAmount ?? tx.settleAmount) ?? amountCents,
+        source: 'gateway_lookup',
+      });
     }
-    const status = details?.transactionStatus || tx.transactionStatus;
-    return {
-      outcome: outcomeForTransactionStatus(status),
-      transactionId: String(tx.transId),
-      cardLast4: cardLast4From(details?.payment?.creditCard?.cardNumber || tx.accountNumber),
-      cardType: details?.payment?.creditCard?.cardType || tx.accountType || null,
-      amountCents: centsFromMoney(details?.authAmount ?? details?.settleAmount ?? tx.settleAmount) ?? amountCents,
-      source: 'gateway_lookup',
-    };
+    described.sort((a, b) => OUTCOME_PRIORITY[a.outcome] - OUTCOME_PRIORITY[b.outcome]);
+    const captures = described.filter((d) => d.outcome === 'captured');
+    if (captures.length > 1) {
+      // Money taken more than once for one attempt: every id, for a person.
+      const [first] = captures;
+      return {
+        ...first,
+        outcome: 'multiple_captures',
+        captures: captures.map(({ transactionId, amountCents: cents, cardLast4, cardType }) => ({ transactionId, amountCents: cents, cardLast4, cardType })),
+      };
+    }
+    return described[0];
   }
 
   // 3. Nothing found. not_found only when the lookup worked, the attempt is
