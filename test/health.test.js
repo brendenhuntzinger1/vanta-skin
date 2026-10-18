@@ -152,3 +152,16 @@ test('?gateway=1 runs the sandbox gateway check only for a signed request, once 
     assert.equal(plain.body.gateway, undefined);
   });
 });
+
+test('?authcheck=1 reports whether the gateway accepts the login; never asked otherwise', async () => {
+  await withEnv(baseEnv, async () => {
+    const calls = [];
+    const checkGatewayAuth = async (input) => { calls.push(input.sandbox); return 'rejected:E00008'; };
+    const plain = await runHealthCheck(signedGet(), { checkGatewayAuth });
+    assert.equal(plain.body.checks.gatewayAuthentication, 'not_requested');
+    assert.equal(calls.length, 0);
+    const asked = await runHealthCheck(signedGet('/api/payments/health?callback=0&authcheck=1'), { checkGatewayAuth });
+    assert.equal(asked.body.checks.gatewayAuthentication, 'rejected:E00008');
+    assert.deepEqual(calls, [true]);
+  });
+});

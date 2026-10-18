@@ -1,11 +1,12 @@
 const { loadConfig } = require('../_lib/config');
-const { methodNotAllowed, setJson } = require('../_lib/http');
+const { methodNotAllowed, setSignedJson } = require('../_lib/http');
 
 // Public Accept.js settings for the browser. Configuration problems are
 // reported generically; variable names stay in the server log.
 module.exports = function handler(req, res) {
   if (req.method !== 'GET') return methodNotAllowed(req, res, ['GET']);
   res.setHeader('cache-control', 'no-store');
+  const setJson = (r, status, payload) => setSignedJson(req, r, status, payload);
 
   try {
     const config = loadConfig();

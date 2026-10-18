@@ -66,6 +66,39 @@ function verifyRequestSignature(config, req, rawBody) {
   };
 }
 
+// Response signing (audit F1, 2026-10-18). Labs used to trust Skin's answers on
+// TLS and the configured base URL alone, so anyone who could answer for that
+// host could mark an order paid. Every answer to a signed bridge request is now
+// signed with the same shared secret, bound to the request it answers: its
+// path, its nonce (random per request, so an answer cannot be replayed against
+// another request or order), the status code and the exact body bytes.
+function responseCanonicalMessage({ path, statusCode, requestNonce, timestamp, bodyHash }) {
+  return ['RESPONSE', String(path || ''), String(statusCode || ''), String(requestNonce || ''), String(timestamp || ''), String(bodyHash || '')].join('\n');
+}
+
+// Headers that sign `rawBody` as the answer to `req`, or null when the request
+// named no key this service holds or carried no nonce (nothing to bind to).
+function responseSignatureHeaders(secrets, req, statusCode, rawBody, nowSeconds = Math.floor(Date.now() / 1000)) {
+  const keyId = req?.headers?.['x-vanta-key-id'];
+  const nonce = req?.headers?.['x-vanta-nonce'];
+  if (!keyId || !nonce || String(nonce).length > 200) return null;
+  const secret = secrets?.[String(keyId)];
+  if (!secret) return null;
+  const timestamp = String(nowSeconds);
+  const message = responseCanonicalMessage({
+    path: String(req.url || '').split('?')[0],
+    statusCode,
+    requestNonce: String(nonce),
+    timestamp,
+    bodyHash: digestHex(rawBody),
+  });
+  return {
+    'x-vanta-key-id': String(keyId),
+    'x-vanta-response-timestamp': timestamp,
+    'x-vanta-response-signature': signHmac(secret, message),
+  };
+}
+
 function verifyWebhookSignature(signatureKey, payload, headerValue) {
   // Fail closed: with no signature key there is nothing to prove a webhook
   // came from Authorize.net, so none is accepted.
@@ -83,6 +116,8 @@ function verifyWebhookSignature(signatureKey, payload, headerValue) {
 module.exports = {
   canonicalMessage,
   digestHex,
+  responseCanonicalMessage,
+  responseSignatureHeaders,
   safeEqualHex,
   signHmac,
   verifyRequestSignature,

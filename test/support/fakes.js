@@ -165,6 +165,13 @@ function createFakeStore() {
       const rows = db.paymentEvents.filter((e) => String(e.authnet_transaction_id) === String(transactionId) && (!actions || actions.includes(e.action)));
       return rows.length ? { ...rows[rows.length - 1] } : null;
     },
+    async listReversalEvents(originalTransactionId) {
+      log.push('listReversalEvents');
+      maybeFail('listReversalEvents');
+      return db.paymentEvents
+        .filter((e) => (e.action === 'refund' || e.action === 'void') && String(e.original_transaction_id) === String(originalTransactionId))
+        .map((e) => ({ ...e }));
+    },
     async findPaymentEventByIdempotencyKey(action, key) {
       log.push('findPaymentEventByIdempotencyKey');
       maybeFail('findPaymentEventByIdempotencyKey');
@@ -293,6 +300,26 @@ function fakeLabs(respond = () => ({ status: 200, body: { ok: true } })) {
   return { calls, post };
 }
 
+// A captured charge as this service records it, so a refund or void has an
+// original transaction to be checked against.
+function seedCharge(store, overrides = {}) {
+  const row = {
+    action: 'charge',
+    order_id: 'order-1',
+    origin_storefront: 'vantalabsresearch.com',
+    authnet_transaction_id: '60212345678',
+    amount_cents: 4604,
+    auth_amount_cents: 4604,
+    currency: 'USD',
+    outcome: 'captured',
+    status: 'paid',
+    created_at: new Date().toISOString(),
+    ...overrides,
+  };
+  store.db.paymentEvents.push(row);
+  return row;
+}
+
 function makeDeps({ config = testConfig(), store = createFakeStore(), gateway = createFakeGateway(), labs = fakeLabs(), now } = {}) {
   const logs = [];
   return {
@@ -323,6 +350,7 @@ module.exports = {
   chargeBody,
   createFakeGateway,
   createFakeStore,
+  seedCharge,
   fakeLabs,
   gatewayResult,
   makeDeps,

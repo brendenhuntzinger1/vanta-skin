@@ -3,8 +3,10 @@ const { hmacMaxSkewSeconds, loadHmacSecrets, loadLabsSyncConfig, resolveAuthnetM
 const { verifyRequestSignature } = require('./security');
 const { signedLabsPost } = require('./sync');
 const gatewayCheck = require('./gateway-check');
+const { createGatewayAuthCheck } = require('./gateway-auth');
 
 const defaultGatewayLimiter = gatewayCheck.gatewayCheckLimiter();
+const defaultGatewayAuthCheck = createGatewayAuthCheck();
 
 // GET /api/payments/health — a read-only readiness check that proves the
 // shared secrets match without either side revealing them:
@@ -55,6 +57,7 @@ async function runHealthCheck(req, {
   postToLabs = signedLabsPost,
   runGatewayCheck = gatewayCheck.runGatewayCheck,
   gatewayLimiter = defaultGatewayLimiter,
+  checkGatewayAuth = defaultGatewayAuthCheck,
 } = {}) {
   let secrets;
   try {
@@ -101,6 +104,11 @@ async function runHealthCheck(req, {
     gateway = await runGatewayCheck({ ping: /[?&]ping=1(&|$)/.test(url), register: /[?&]register=1(&|$)/.test(url) });
   }
 
+  // ?authcheck=1: does the gateway this mode points at accept our login?
+  // (gateway-auth.js — read-only, cached a minute per instance.)
+  const wantsAuthcheck = /[?&]authcheck=1(&|$)/.test(String(req.url || ''));
+  const gatewayAuthentication = wantsAuthcheck ? await checkGatewayAuth({ env: process.env, sandbox }) : 'not_requested';
+
   const wantsCallback = /[?&]callback=1(&|$)/.test(String(req.url || ''));
   const labsCallback = wantsCallback
     ? await checkLabsCallback(loadLabsSyncConfig(), sandbox, postToLabs)
@@ -120,6 +128,7 @@ async function runHealthCheck(req, {
         webhookSignatureKey: hasEnv('AUTHNET_SIGNATURE_KEY') ? 'present' : 'missing',
         database,
         labsCallback,
+        gatewayAuthentication,
       },
       ...(gateway ? { gateway } : {}),
     },
