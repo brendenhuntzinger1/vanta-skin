@@ -24,9 +24,22 @@ function setSignedJson(req, res, status, payload) {
   res.end(raw);
 }
 
-async function readRawBody(req) {
+// A charge request is about 2 KB. Anything far larger is refused unread
+// rather than buffered (audit 2026-10-18, browser F7).
+const MAX_BODY_BYTES = 64 * 1024;
+
+async function readRawBody(req, { maxBytes = MAX_BODY_BYTES } = {}) {
   const chunks = [];
-  for await (const chunk of req) chunks.push(chunk);
+  let size = 0;
+  for await (const chunk of req) {
+    size += chunk.length;
+    if (size > maxBytes) {
+      const error = new Error('Request body too large');
+      error.code = 'body_too_large';
+      throw error;
+    }
+    chunks.push(chunk);
+  }
   return Buffer.concat(chunks).toString('utf8');
 }
 
@@ -45,6 +58,7 @@ function hashBody(raw) {
 }
 
 module.exports = {
+  MAX_BODY_BYTES,
   hashBody,
   methodNotAllowed,
   parseJson,

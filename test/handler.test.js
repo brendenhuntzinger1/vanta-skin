@@ -62,3 +62,12 @@ test('every payment endpoint module loads', () => {
     assert.equal(typeof require(`../api/payments/${name}`), 'function', name);
   }
 });
+
+test('a body over 64 KB is refused unread (400, nothing processed)', async () => {
+  let ran = false;
+  const handler = bridgeHandler('charge', async () => { ran = true; return { statusCode: 200, body: {} }; });
+  const r = res();
+  await handler(req('x'.repeat(64 * 1024 + 1)), r);
+  assert.equal(r.statusCode, 400);
+  assert.equal(ran, false);
+});
